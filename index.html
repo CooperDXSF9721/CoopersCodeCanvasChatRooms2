@@ -1,0 +1,353 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Collaborative Drawing - Private Rooms</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: hsl(217, 25%, 12%);
+      color: hsl(217, 10%, 92%);
+      overflow: hidden;
+    }
+
+    #drawCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      background: white;
+      cursor: crosshair;
+    }
+
+    #toolbar {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      background: hsl(217, 25%, 16%);
+      border: 1px solid hsl(217, 22%, 18%);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      box-shadow: 0px 10px 20px -4px hsl(0 0% 0% / 0.45);
+      z-index: 1000;
+      flex-wrap: wrap;
+    }
+
+    #toolbar input[type="color"] {
+      width: 40px;
+      height: 36px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+
+    #toolbar input[type="number"] {
+      width: 70px;
+      padding: 8px 12px;
+      background: hsl(217, 20%, 20%);
+      border: 1px solid hsl(217, 20%, 35%);
+      border-radius: 8px;
+      color: hsl(217, 10%, 92%);
+      font-size: 14px;
+    }
+
+    #toolbar input[type="text"] {
+      padding: 8px 12px;
+      background: hsl(217, 20%, 20%);
+      border: 1px solid hsl(217, 20%, 35%);
+      border-radius: 8px;
+      color: hsl(217, 10%, 92%);
+      font-size: 14px;
+      min-width: 150px;
+    }
+
+    #toolbar button {
+      padding: 8px 16px;
+      background: hsl(220, 90%, 56%);
+      color: hsl(220, 90%, 98%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 150ms;
+    }
+
+    #toolbar button:hover {
+      background: hsl(220, 90%, 48%);
+    }
+
+    #toolbar button:active {
+      transform: scale(0.98);
+    }
+
+    #toolbar button.secondary {
+      background: hsl(217, 20%, 24%);
+      color: hsl(217, 10%, 88%);
+    }
+
+    #toolbar button.secondary:hover {
+      background: hsl(217, 20%, 28%);
+    }
+
+    #toolbar button.destructive {
+      background: hsl(0, 72%, 51%);
+      color: hsl(0, 0%, 98%);
+    }
+
+    #toolbar button.destructive:hover {
+      background: hsl(0, 72%, 45%);
+    }
+
+    #roomIndicator {
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: hsl(142, 76%, 55%);
+      display: none;
+      align-items: center;
+      gap: 6px;
+    }
+
+    #roomIndicator::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: hsl(142, 76%, 55%);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    .room-menu-container {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 1000;
+    }
+
+    #roomMenuBtn {
+      background: hsl(217, 25%, 16%);
+      border: 1px solid hsl(217, 22%, 18%);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0px 10px 20px -4px hsl(0 0% 0% / 0.45);
+      cursor: pointer;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 14px;
+      font-weight: 600;
+      color: hsl(217, 10%, 92%);
+      transition: all 150ms;
+    }
+
+    #roomMenuBtn:hover {
+      background: hsl(217, 25%, 18%);
+    }
+
+    #roomMenuBtn .status-dot {
+      width: 8px;
+      height: 8px;
+      background: hsl(142, 76%, 55%);
+      border-radius: 50%;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    #roomMenuBtn.public .status-dot {
+      background: hsl(220, 90%, 56%);
+    }
+
+    #roomDropdown {
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      background: hsl(217, 25%, 16%);
+      border: 1px solid hsl(217, 22%, 20%);
+      border-radius: 12px;
+      padding: 16px;
+      min-width: 320px;
+      box-shadow: 0px 30px 60px -12px hsl(0 0% 0% / 0.60);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-8px);
+      transition: all 200ms ease-out;
+    }
+
+    #roomDropdown.show {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    .dropdown-section {
+      margin-bottom: 16px;
+    }
+
+    .dropdown-section:last-child {
+      margin-bottom: 0;
+    }
+
+    .dropdown-section h3 {
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: hsl(217, 10%, 90%);
+    }
+
+    #roomCodeDisplay {
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      font-size: 18px;
+      font-weight: 600;
+      color: hsl(220, 90%, 56%);
+      padding: 12px;
+      background: hsl(217, 20%, 20%);
+      border-radius: 8px;
+      text-align: center;
+      margin-bottom: 8px;
+      letter-spacing: 0.05em;
+    }
+
+    .dropdown-section input {
+      width: 100%;
+      padding: 8px 12px;
+      background: hsl(217, 20%, 20%);
+      border: 1px solid hsl(217, 20%, 35%);
+      border-radius: 8px;
+      color: hsl(217, 10%, 92%);
+      font-size: 14px;
+      margin-bottom: 8px;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+      text-transform: uppercase;
+    }
+
+    .dropdown-section button {
+      width: 100%;
+      padding: 8px 12px;
+      background: hsl(220, 90%, 56%);
+      color: hsl(220, 90%, 98%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 150ms;
+      margin-bottom: 8px;
+    }
+
+    .dropdown-section button:last-child {
+      margin-bottom: 0;
+    }
+
+    .dropdown-section button:hover {
+      background: hsl(220, 90%, 48%);
+    }
+
+    .dropdown-section button.secondary {
+      background: hsl(217, 20%, 24%);
+      color: hsl(217, 10%, 88%);
+    }
+
+    .dropdown-section button.secondary:hover {
+      background: hsl(217, 20%, 28%);
+    }
+
+    .dropdown-section button.destructive {
+      background: hsl(0, 84%, 48%);
+      color: hsl(0, 0%, 100%);
+    }
+
+    .dropdown-section button.destructive:hover {
+      background: hsl(0, 84%, 40%);
+    }
+
+    .divider {
+      height: 1px;
+      background: hsl(217, 22%, 20%);
+      margin: 16px 0;
+    }
+
+    @media (max-width: 768px) {
+      #toolbar {
+        top: auto;
+        bottom: 16px;
+        left: 16px;
+        right: 16px;
+        max-width: calc(100% - 32px);
+        overflow-x: auto;
+      }
+
+      .room-menu-container {
+        top: auto;
+        bottom: 80px;
+        right: 16px;
+      }
+
+      #roomDropdown {
+        min-width: 280px;
+        bottom: calc(100% + 8px);
+        top: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="drawCanvas"></canvas>
+
+  <div id="toolbar">
+    <input type="color" id="colorPicker" value="#000000" title="Brush color">
+    <input type="number" id="sizePicker" min="1" max="200" value="4" title="Brush size">
+    <button id="eraserBtn" class="secondary" data-testid="button-eraser">Eraser</button>
+    <input type="number" id="textSizePicker" min="10" max="200" value="40" title="Text size">
+    <input type="text" id="freeTextInput" placeholder="Add text..." data-testid="input-text">
+    <button id="addTextBtn" data-testid="button-add-text">Add Text</button>
+    <button id="clearBtn" class="destructive" style="display: none;" data-testid="button-clear">Clear Canvas</button>
+  </div>
+
+  <div class="room-menu-container">
+    <div id="roomMenuBtn" data-testid="button-room-menu">
+      <span class="status-dot"></span>
+      <span id="roomIndicator">Public Canvas</span>
+    </div>
+    <div id="roomDropdown" data-testid="dropdown-room">
+      <div class="dropdown-section">
+        <h3>Current Room</h3>
+        <div id="roomCodeDisplay">PUBLIC</div>
+        <button id="copyRoomBtn" class="secondary" data-testid="button-copy-room">Copy Room Code</button>
+        <button id="deleteRoomBtn" class="destructive" data-testid="button-delete-room">Delete Room</button>
+        <button id="goPublicBtn" class="secondary" data-testid="button-go-public">Go to Public Canvas</button>
+      </div>
+      <div class="divider"></div>
+      <div class="dropdown-section">
+        <h3>Create Private Room</h3>
+        <button id="createRoomBtn" data-testid="button-create-room">Create New Room</button>
+      </div>
+      <div class="divider"></div>
+      <div class="dropdown-section">
+        <h3>Join Private Room</h3>
+        <input type="text" id="roomCodeInput" placeholder="Enter code (e.g., ABC123)" data-testid="input-room-code">
+        <button id="joinRoomBtn" data-testid="button-join-room">Join Room</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+  <script src="collab.js"></script>
+</body>
+</html>
