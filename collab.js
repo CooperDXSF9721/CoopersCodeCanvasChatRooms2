@@ -1,4 +1,3 @@
-
 // ==================== Firebase Config ====================
 const firebaseConfig = {
   apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
@@ -575,6 +574,180 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', async () => 
         ]);
       } catch (err) {
         console.error('Failed to clear canvas data:', err);
+      }
+    });
+    
+    // Create admin room management button
+    const adminRoomBtn = document.createElement('button');
+    adminRoomBtn.textContent = 'Manage Rooms';
+    adminRoomBtn.className = 'secondary';
+    adminRoomBtn.style.display = 'inline-block';
+    document.getElementById('toolbar').appendChild(adminRoomBtn);
+    
+    // Create admin panel
+    const adminPanel = document.createElement('div');
+    adminPanel.id = 'adminPanel';
+    adminPanel.style.cssText = `
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: hsl(217, 25%, 16%);
+      border: 1px solid hsl(217, 22%, 20%);
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 600px;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0px 30px 60px -12px hsl(0 0% 0% / 0.60);
+      z-index: 2000;
+      display: none;
+    `;
+    
+    const panelTitle = document.createElement('h2');
+    panelTitle.textContent = 'Admin: Room Management';
+    panelTitle.style.cssText = 'margin-bottom: 16px; color: hsl(217, 10%, 92%); font-size: 18px;';
+    adminPanel.appendChild(panelTitle);
+    
+    const roomList = document.createElement('div');
+    roomList.id = 'adminRoomList';
+    adminPanel.appendChild(roomList);
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.style.cssText = `
+      margin-top: 16px;
+      padding: 8px 16px;
+      background: hsl(217, 20%, 24%);
+      color: hsl(217, 10%, 88%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      width: 100%;
+    `;
+    closeBtn.onclick = () => { adminPanel.style.display = 'none'; };
+    adminPanel.appendChild(closeBtn);
+    
+    document.body.appendChild(adminPanel);
+    
+    adminRoomBtn.addEventListener('click', async () => {
+      adminPanel.style.display = 'block';
+      roomList.innerHTML = '<p style="color: hsl(217, 10%, 80%);">Loading rooms...</p>';
+      
+      try {
+        const roomsSnapshot = await db.ref('rooms').once('value');
+        const rooms = roomsSnapshot.val();
+        
+        if (!rooms) {
+          roomList.innerHTML = '<p style="color: hsl(217, 10%, 80%);">No private rooms found.</p>';
+          return;
+        }
+        
+        roomList.innerHTML = '';
+        
+        Object.keys(rooms).forEach(roomId => {
+          if (roomId === 'public') return;
+          
+          const roomData = rooms[roomId];
+          const hasPassword = roomData.password ? 'Yes' : 'No';
+          const lineCount = roomData.lines ? Object.keys(roomData.lines).length : 0;
+          const textCount = roomData.texts ? Object.keys(roomData.texts).length : 0;
+          
+          // Calculate last activity
+          let lastActivity = 'Unknown';
+          let lastTimestamp = 0;
+          
+          if (roomData.lines) {
+            Object.values(roomData.lines).forEach(line => {
+              if (line.timestamp && line.timestamp > lastTimestamp) {
+                lastTimestamp = line.timestamp;
+              }
+            });
+          }
+          if (roomData.texts) {
+            Object.values(roomData.texts).forEach(text => {
+              if (text.timestamp && text.timestamp > lastTimestamp) {
+                lastTimestamp = text.timestamp;
+              }
+            });
+          }
+          
+          if (lastTimestamp > 0) {
+            const date = new Date(lastTimestamp);
+            lastActivity = date.toLocaleString();
+          }
+          
+          const roomCard = document.createElement('div');
+          roomCard.style.cssText = `
+            background: hsl(217, 20%, 20%);
+            border: 1px solid hsl(217, 20%, 25%);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+          `;
+          
+          roomCard.innerHTML = `
+            <div style="color: hsl(220, 90%, 56%); font-weight: 600; font-family: 'JetBrains Mono', monospace; margin-bottom: 8px;">
+              ${roomId}
+            </div>
+            <div style="color: hsl(217, 10%, 80%); font-size: 13px; margin-bottom: 8px;">
+              <div>Password Protected: ${hasPassword}</div>
+              <div>Lines: ${lineCount} | Texts: ${textCount}</div>
+              <div>Last Activity: ${lastActivity}</div>
+            </div>
+          `;
+          
+          const btnContainer = document.createElement('div');
+          btnContainer.style.cssText = 'display: flex; gap: 8px; margin-top: 8px;';
+          
+          const previewBtn = document.createElement('button');
+          previewBtn.textContent = 'Preview';
+          previewBtn.style.cssText = `
+            padding: 6px 12px;
+            background: hsl(220, 90%, 56%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            flex: 1;
+          `;
+          previewBtn.onclick = () => {
+            window.open(`#${roomId}`, '_blank');
+          };
+          
+          const deleteBtn = document.createElement('button');
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.style.cssText = `
+            padding: 6px 12px;
+            background: hsl(0, 84%, 48%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            flex: 1;
+          `;
+          deleteBtn.onclick = async () => {
+            if (confirm(`Delete room ${roomId}? This will kick all users.`)) {
+              await db.ref(`rooms/${roomId}/deleted`).set(true);
+              await new Promise(resolve => setTimeout(resolve, 500));
+              await db.ref(`rooms/${roomId}`).remove();
+              alert(`Room ${roomId} deleted`);
+              adminRoomBtn.click(); // Refresh the list
+            }
+          };
+          
+          btnContainer.appendChild(previewBtn);
+          btnContainer.appendChild(deleteBtn);
+          roomCard.appendChild(btnContainer);
+          roomList.appendChild(roomCard);
+        });
+        
+      } catch (err) {
+        console.error('Error loading rooms:', err);
+        roomList.innerHTML = '<p style="color: hsl(0, 84%, 48%);">Error loading rooms.</p>';
       }
     });
   }
