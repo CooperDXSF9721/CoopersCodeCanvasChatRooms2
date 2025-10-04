@@ -650,6 +650,7 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', async () => 
           if (roomId === 'public') return;
           
           const roomData = rooms[roomId];
+          const password = roomData.password || 'None';
           const hasPassword = roomData.password ? 'Yes' : 'No';
           const lineCount = roomData.lines ? Object.keys(roomData.lines).length : 0;
           const textCount = roomData.texts ? Object.keys(roomData.texts).length : 0;
