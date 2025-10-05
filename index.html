@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -109,38 +108,18 @@
       background: hsl(0, 72%, 45%);
     }
 
-    #roomIndicator {
-      font-family: 'JetBrains Mono', 'Courier New', monospace;
-      font-size: 14px;
-      font-weight: 600;
-      color: hsl(142, 76%, 55%);
-      display: none;
-      align-items: center;
-      gap: 6px;
-    }
-
-    #roomIndicator::before {
-      content: '';
-      width: 8px;
-      height: 8px;
-      background: hsl(142, 76%, 55%);
-      border-radius: 50%;
-      animation: pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.5; }
-    }
-
-    .room-menu-container {
+    .room-menu-container, .page-menu-container {
       position: fixed;
       top: 16px;
       right: 16px;
       z-index: 1000;
     }
 
-    #roomMenuBtn {
+    .page-menu-container {
+      top: 80px;
+    }
+
+    #roomMenuBtn, #pageMenuBtn {
       background: hsl(217, 25%, 16%);
       border: 1px solid hsl(217, 22%, 18%);
       border-radius: 12px;
@@ -157,7 +136,7 @@
       transition: all 150ms;
     }
 
-    #roomMenuBtn:hover {
+    #roomMenuBtn:hover, #pageMenuBtn:hover {
       background: hsl(217, 25%, 18%);
     }
 
@@ -173,7 +152,12 @@
       background: hsl(220, 90%, 56%);
     }
 
-    #roomDropdown {
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+
+    #roomDropdown, #pageDropdown {
       position: absolute;
       top: calc(100% + 8px);
       right: 0;
@@ -189,7 +173,7 @@
       transition: all 200ms ease-out;
     }
 
-    #roomDropdown.show {
+    #roomDropdown.show, #pageDropdown.show {
       opacity: 1;
       visibility: visible;
       transform: translateY(0);
@@ -276,6 +260,40 @@
       background: hsl(0, 84%, 40%);
     }
 
+    .page-btn {
+      width: 100%;
+      padding: 8px 12px;
+      background: hsl(217, 20%, 24%);
+      color: hsl(217, 10%, 88%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 150ms;
+      margin-bottom: 8px;
+      text-align: left;
+    }
+
+    .page-btn:hover {
+      background: hsl(217, 20%, 28%);
+    }
+
+    .page-btn.active {
+      background: hsl(220, 90%, 56%);
+      color: hsl(220, 90%, 98%);
+    }
+
+    .page-btn.active:hover {
+      background: hsl(220, 90%, 48%);
+    }
+
+    #pagesList {
+      max-height: 300px;
+      overflow-y: auto;
+      margin-bottom: 12px;
+    }
+
     .divider {
       height: 1px;
       background: hsl(217, 22%, 20%);
@@ -294,11 +312,17 @@
 
       .room-menu-container {
         top: auto;
-        bottom: 80px;
+        bottom: 160px;
         right: 16px;
       }
 
-      #roomDropdown {
+      .page-menu-container {
+        top: auto;
+        bottom: 96px;
+        right: 16px;
+      }
+
+      #roomDropdown, #pageDropdown {
         min-width: 280px;
         bottom: calc(100% + 8px);
         top: auto;
@@ -314,8 +338,7 @@
     <input type="number" id="sizePicker" min="1" max="200" value="4" title="Brush size">
     <button id="eraserBtn" class="secondary" data-testid="button-eraser">Eraser</button>
     <input type="number" id="textSizePicker" min="10" max="200" value="40" title="Text size">
-    <input type="text" id="freeTextInput" placeholder="Add text..." data-testid="input-text">
-    <button id="addTextBtn" data-testid="button-add-text">Add Text</button>
+    <input type="text" id="freeTextInput" placeholder="Add text (press Enter)..." data-testid="input-text">
     <button id="clearBtn" class="destructive" style="display: none;" data-testid="button-clear">Clear Canvas</button>
   </div>
 
@@ -342,6 +365,20 @@
         <h3>Join Private Room</h3>
         <input type="text" id="roomCodeInput" placeholder="Enter code (e.g., ABC123)" data-testid="input-room-code">
         <button id="joinRoomBtn" data-testid="button-join-room">Join Room</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-menu-container">
+    <div id="pageMenuBtn" data-testid="button-page-menu">
+      <span>📄</span>
+      <span id="pageIndicator">Page 1</span>
+    </div>
+    <div id="pageDropdown" data-testid="dropdown-page">
+      <div class="dropdown-section">
+        <h3>Pages</h3>
+        <div id="pagesList"></div>
+        <button id="createPageBtn" data-testid="button-create-page">+ Create New Page</button>
       </div>
     </div>
   </div>
