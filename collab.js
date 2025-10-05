@@ -154,7 +154,14 @@ function setupFirebaseListeners() {
     ctx.globalCompositeOperation = 'source-over';
   });
 
-  // REMOVED THE PROBLEMATIC linesRef.on('value') LISTENER
+  // Listen for when the entire lines node is removed (cleared)
+  linesRef.on('value', snapshot => {
+    if (!snapshot.exists()) {
+      // Lines were cleared
+      linesCache.length = 0;
+      drawAll();
+    }
+  });
 
   textsRef.on('child_added', snapshot => {
     const key = snapshot.key;
@@ -174,6 +181,15 @@ function setupFirebaseListeners() {
     const key = snapshot.key;
     textsCache.delete(key);
     drawAll();
+  });
+
+  // Listen for when the entire texts node is removed (cleared)
+  textsRef.on('value', snapshot => {
+    if (!snapshot.exists()) {
+      // Texts were cleared
+      textsCache.clear();
+      drawAll();
+    }
   });
 }
 
