@@ -13,6 +13,7 @@ const db = firebase.database();
 
 // ==================== Room Management ====================
 let currentRoomId = null;
+let currentPageId = 'page1'; // Default page
 let linesRef = null;
 let textsRef = null;
 let roomDeletedRef = null;
@@ -82,8 +83,9 @@ async function joinRoom(roomId, password = null) {
   if (roomClearedRef) roomClearedRef.off();
 
   currentRoomId = roomId;
-  linesRef = db.ref(`rooms/${roomId}/lines`);
-  textsRef = db.ref(`rooms/${roomId}/texts`);
+  currentPageId = 'page1'; // Reset to page 1 when joining a new room
+  linesRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/lines`);
+  textsRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/texts`);
 
   isJoiningRoom = true;
   linesCache.length = 0;
@@ -94,6 +96,7 @@ async function joinRoom(roomId, password = null) {
   setupRoomDeletionListener();
   setupRoomClearedListener();
   updateRoomIndicator();
+  updatePageIndicator();
 
   window.location.hash = roomId;
   
@@ -114,7 +117,7 @@ function setupRoomDeletionListener() {
 }
 
 function setupRoomClearedListener() {
-  roomClearedRef = db.ref(`rooms/${currentRoomId}/cleared`);
+  roomClearedRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`);
   roomClearedRef.on('value', snapshot => {
     if (!isJoiningRoom && snapshot.exists()) {
       // Canvas was cleared
@@ -123,6 +126,38 @@ function setupRoomClearedListener() {
       drawAll();
     }
   });
+}
+
+function updatePageIndicator() {
+  const indicator = document.getElementById('pageIndicator');
+  if (indicator) {
+    const pageNum = currentPageId.replace('page', '');
+    indicator.textContent = `Page ${pageNum}`;
+  }
+}
+
+async function switchPage(pageId) {
+  if (pageId === currentPageId) return;
+  
+  // Turn off old listeners
+  if (linesRef) linesRef.off();
+  if (textsRef) textsRef.off();
+  if (roomClearedRef) roomClearedRef.off();
+  
+  currentPageId = pageId;
+  linesRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`);
+  textsRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`);
+  
+  isJoiningRoom = true;
+  linesCache.length = 0;
+  textsCache.clear();
+  drawAll();
+  
+  setupFirebaseListeners();
+  setupRoomClearedListener();
+  updatePageIndicator();
+  
+  setTimeout(() => { isJoiningRoom = false; }, 1000);
 }
 
 function updateRoomIndicator() {
@@ -412,7 +447,6 @@ if (sizePicker) {
 const eraserBtn = document.getElementById('eraserBtn');
 const clearBtn = document.getElementById('clearBtn');
 const freeTextInput = document.getElementById('freeTextInput');
-const addTextBtn = document.getElementById('addTextBtn');
 
 let textSizePicker = document.getElementById('textSizePicker');
 let textFontPicker = document.getElementById('textFontPicker');
@@ -449,8 +483,8 @@ if (!textFontPicker) {
     textFontPicker.appendChild(option);
   });
   
-  if (toolbarEl && addTextBtn && addTextBtn.parentElement === toolbarEl) {
-    toolbarEl.insertBefore(textFontPicker, addTextBtn);
+  if (toolbarEl && freeTextInput && freeTextInput.parentElement === toolbarEl) {
+    toolbarEl.insertBefore(textFontPicker, freeTextInput);
   } else if (toolbarEl) {
     toolbarEl.appendChild(textFontPicker);
   } else {
@@ -569,7 +603,7 @@ function findEmptySpace(textWidth, textHeight) {
   };
 }
 
-addTextBtn.addEventListener('click', () => {
+function addTextToCanvas() {
   const content = (freeTextInput.value || '').trim();
   if (!content || !currentRoomId) return;
   const size = getTextSize();
@@ -613,6 +647,14 @@ addTextBtn.addEventListener('click', () => {
   
   textsRef.push({ x, y, text: content, size, color: brushColor, font });
   freeTextInput.value = '';
+}
+
+// Add text when Enter key is pressed
+freeTextInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    addTextToCanvas();
+  }
 });
 
 // ==================== Room UI ====================
@@ -683,6 +725,107 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', async () => 
   }
 });
 
+// ==================== Page Management ====================
+const pageDropdown = document.getElementById('pageDropdown');
+const pageMenuBtn = document.getElementById('pageMenuBtn');
+
+pageMenuBtn?.addEventListener('click', () => {
+  pageDropdown.classList.toggle('show');
+});
+
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.page-menu-container')) {
+    pageDropdown?.classList.remove('show');
+  }
+});
+
+// Load and display pages
+async function loadPagesList() {
+  const pageListEl = document.getElementById('pagesList');
+  if (!pageListEl || !currentRoomId) return;
+  
+  try {
+    const pagesSnapshot = await db.ref(`rooms/${currentRoomId}/pages`).once('value');
+    const pages = pagesSnapshot.val();
+    
+    pageListEl.innerHTML = '';
+    
+    if (!pages) {
+      // Create default page 1
+      const pageBtn = createPageButton('page1', 1, true);
+      pageListEl.appendChild(pageBtn);
+      return;
+    }
+    
+    // Get all page numbers
+    const pageIds = Object.keys(pages).sort((a, b) => {
+      const numA = parseInt(a.replace('page', ''));
+      const numB = parseInt(b.replace('page', ''));
+      return numA - numB;
+    });
+    
+    pageIds.forEach(pageId => {
+      const pageNum = parseInt(pageId.replace('page', ''));
+      const isActive = pageId === currentPageId;
+      const pageBtn = createPageButton(pageId, pageNum, isActive);
+      pageListEl.appendChild(pageBtn);
+    });
+    
+  } catch (err) {
+    console.error('Error loading pages:', err);
+  }
+}
+
+function createPageButton(pageId, pageNum, isActive) {
+  const btn = document.createElement('button');
+  btn.textContent = `Page ${pageNum}`;
+  btn.className = isActive ? 'page-btn active' : 'page-btn';
+  btn.onclick = () => {
+    switchPage(pageId);
+    pageDropdown.classList.remove('show');
+    loadPagesList(); // Refresh list to update active state
+  };
+  return btn;
+}
+
+document.getElementById('createPageBtn')?.addEventListener('click', async () => {
+  try {
+    // Find the highest page number
+    const pagesSnapshot = await db.ref(`rooms/${currentRoomId}/pages`).once('value');
+    const pages = pagesSnapshot.val();
+    
+    let maxPageNum = 1;
+    if (pages) {
+      Object.keys(pages).forEach(pageId => {
+        const num = parseInt(pageId.replace('page', ''));
+        if (num > maxPageNum) maxPageNum = num;
+      });
+    }
+    
+    const newPageNum = maxPageNum + 1;
+    const newPageId = `page${newPageNum}`;
+    
+    // Create the new page with a marker
+    await db.ref(`rooms/${currentRoomId}/pages/${newPageId}/created`).set(true);
+    
+    // Switch to the new page
+    switchPage(newPageId);
+    pageDropdown.classList.remove('show');
+    loadPagesList();
+    
+  } catch (err) {
+    console.error('Error creating page:', err);
+    alert('Failed to create new page. Please try again.');
+  }
+});
+
+// Refresh pages list when dropdown is opened
+pageMenuBtn?.addEventListener('click', () => {
+  if (pageDropdown.classList.contains('show')) {
+    loadPagesList();
+  }
+});
+
 // ==================== Admin ====================
 (function setupAdmin() {
   const adminKey = "cooper";
@@ -694,11 +837,11 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', async () => 
       if (!confirm('Clear entire canvas? This will remove all drawings and text for everyone.')) return;
       try {
         // Set a cleared flag first
-        await db.ref(`rooms/${currentRoomId}/cleared`).set(Date.now());
+        await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`).set(Date.now());
         
         // Then remove the data from Firebase
-        await db.ref(`rooms/${currentRoomId}/lines`).remove();
-        await db.ref(`rooms/${currentRoomId}/texts`).remove();
+        await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`).remove();
+        await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`).remove();
         
         // Clear local cache
         linesCache.length = 0;
