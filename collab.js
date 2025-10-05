@@ -488,13 +488,129 @@ eraserBtn.addEventListener('click', () => {
   eraserBtn.style.backgroundColor = eraserActive ? 'orange' : '';
 });
 
+function findEmptySpace(textWidth, textHeight) {
+  const padding = 20;
+  const step = 50;
+  const maxAttempts = 100;
+  
+  // Get toolbar dimensions to avoid placing text behind it
+  const toolbar = document.getElementById('toolbar');
+  const toolbarRect = toolbar ? toolbar.getBoundingClientRect() : null;
+  const toolbarPadding = 20; // Extra space around toolbar
+  
+  // Helper function to check if position overlaps with toolbar
+  function overlapsWithToolbar(x, y, w, h) {
+    if (!toolbarRect) return false;
+    
+    // Check if text overlaps with toolbar area (with padding)
+    return !(x > toolbarRect.right + toolbarPadding || 
+             x + w < toolbarRect.left - toolbarPadding || 
+             y > toolbarRect.bottom + toolbarPadding || 
+             y + h < toolbarRect.top - toolbarPadding);
+  }
+  
+  // Helper function to check if a rectangle overlaps with any existing text
+  function overlapsWithText(x, y, w, h) {
+    let hasOverlap = false;
+    textsCache.forEach(t => {
+      const tSize = t.size || 40;
+      const tFont = t.font || 'sans-serif';
+      const tContent = t.text || '';
+      if (!tContent) return;
+      
+      ctx.font = `${tSize}px ${tFont}`;
+      const tWidth = ctx.measureText(tContent).width;
+      const tHeight = tSize;
+      
+      // Check if rectangles overlap
+      if (!(x + w + padding < t.x || 
+            x > t.x + tWidth + padding || 
+            y + h + padding < t.y || 
+            y > t.y + tHeight + padding)) {
+        hasOverlap = true;
+      }
+    });
+    return hasOverlap;
+  }
+  
+  // Start from a grid pattern
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const gridX = (attempt % 10) * step + 50;
+    const gridY = Math.floor(attempt / 10) * step + 50;
+    
+    // Make sure we stay within canvas bounds
+    if (gridX + textWidth + padding > canvas.width || 
+        gridY + textHeight + padding > canvas.height) {
+      continue;
+    }
+    
+    // Check if it overlaps with toolbar or existing text
+    if (!overlapsWithToolbar(gridX, gridY, textWidth, textHeight) &&
+        !overlapsWithText(gridX, gridY, textWidth, textHeight)) {
+      return { x: gridX, y: gridY };
+    }
+  }
+  
+  // If no empty space found, place at random location (avoiding toolbar)
+  let randomX, randomY;
+  for (let i = 0; i < 20; i++) {
+    randomX = Math.random() * (canvas.width - textWidth - 100) + 50;
+    randomY = Math.random() * (canvas.height - textHeight - 100) + 50;
+    
+    if (!overlapsWithToolbar(randomX, randomY, textWidth, textHeight)) {
+      return { x: randomX, y: randomY };
+    }
+  }
+  
+  // Last resort: place it in the middle-right area
+  return {
+    x: canvas.width - textWidth - 100,
+    y: canvas.height / 2
+  };
+}
+
 addTextBtn.addEventListener('click', () => {
   const content = (freeTextInput.value || '').trim();
   if (!content || !currentRoomId) return;
   const size = getTextSize();
   const font = getTextFont();
-  const x = current.x || canvas.width / 2;
-  const y = current.y || canvas.height / 2;
+  
+  // Measure the text to find appropriate empty space
+  ctx.font = `${size}px ${font}`;
+  const textWidth = ctx.measureText(content).width;
+  const textHeight = size;
+  
+  // Check if text can fit anywhere on the canvas (with margins)
+  const margin = 50;
+  const maxWidth = canvas.width - (margin * 2);
+  const maxHeight = canvas.height - (margin * 2);
+  
+  if (textWidth > maxWidth || textHeight > maxHeight) {
+    // Calculate the maximum font size that would fit
+    let maxFontSize = size;
+    
+    if (textWidth > maxWidth) {
+      // Scale down based on width
+      maxFontSize = Math.floor((maxWidth / textWidth) * size);
+    }
+    
+    if (textHeight > maxHeight && maxFontSize > maxHeight) {
+      // Also check height constraint
+      maxFontSize = Math.min(maxFontSize, maxHeight);
+    }
+    
+    alert(`Error: Text is too large to fit on the canvas!\n\nCurrent font size: ${size}px\nMaximum font size that would fit: ${maxFontSize}px\n\nPlease reduce the text size and try again.`);
+    return;
+  }
+  
+  const { x, y } = findEmptySpace(textWidth, textHeight);
+  
+  // Final check: make sure the found position actually fits on canvas
+  if (x + textWidth > canvas.width || y + textHeight > canvas.height) {
+    alert(`Error: Cannot find space on canvas for text of this size.\n\nCurrent font size: ${size}px\nTry reducing the text size or clearing some existing text.`);
+    return;
+  }
+  
   textsRef.push({ x, y, text: content, size, color: brushColor, font });
   freeTextInput.value = '';
 });
