@@ -16,6 +16,8 @@ let currentRoomId = null;
 let linesRef = null;
 let textsRef = null;
 let roomDeletedRef = null;
+let roomClearedRef = null;
+let isJoiningRoom = false;
 
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -77,20 +79,26 @@ async function joinRoom(roomId, password = null) {
   if (linesRef) linesRef.off();
   if (textsRef) textsRef.off();
   if (roomDeletedRef) roomDeletedRef.off();
+  if (roomClearedRef) roomClearedRef.off();
 
   currentRoomId = roomId;
   linesRef = db.ref(`rooms/${roomId}/lines`);
   textsRef = db.ref(`rooms/${roomId}/texts`);
 
+  isJoiningRoom = true;
   linesCache.length = 0;
   textsCache.clear();
   drawAll();
 
   setupFirebaseListeners();
   setupRoomDeletionListener();
+  setupRoomClearedListener();
   updateRoomIndicator();
 
   window.location.hash = roomId;
+  
+  // Reset the flag after listeners are set up
+  setTimeout(() => { isJoiningRoom = false; }, 1000);
 }
 
 function setupRoomDeletionListener() {
@@ -101,6 +109,18 @@ function setupRoomDeletionListener() {
     if (snapshot.val() === true) {
       alert('Sorry, this room has been deleted by the owner.');
       joinRoom('public');
+    }
+  });
+}
+
+function setupRoomClearedListener() {
+  roomClearedRef = db.ref(`rooms/${currentRoomId}/cleared`);
+  roomClearedRef.on('value', snapshot => {
+    if (!isJoiningRoom && snapshot.exists()) {
+      // Canvas was cleared
+      linesCache.length = 0;
+      textsCache.clear();
+      drawAll();
     }
   });
 }
@@ -136,9 +156,16 @@ function updateRoomIndicator() {
 }
 
 function setupFirebaseListeners() {
+  // Store line keys to track them
+  const lineKeys = new Map(); // maps Firebase key to cache index
+  
   linesRef.on('child_added', snapshot => {
     const line = snapshot.val();
+    const key = snapshot.key;
+    const index = linesCache.length;
     linesCache.push(line);
+    lineKeys.set(key, index);
+    
     line.points.forEach(p => {
       ctx.beginPath();
       ctx.arc(p.x, p.y, line.width / 2, 0, Math.PI * 2);
@@ -156,9 +183,10 @@ function setupFirebaseListeners() {
 
   // Listen for when the entire lines node is removed (cleared)
   linesRef.on('value', snapshot => {
-    if (!snapshot.exists()) {
-      // Lines were cleared
+    if (!isJoiningRoom && !snapshot.exists() && linesCache.length > 0) {
+      // Lines were cleared by someone else
       linesCache.length = 0;
+      lineKeys.clear();
       drawAll();
     }
   });
@@ -185,8 +213,8 @@ function setupFirebaseListeners() {
 
   // Listen for when the entire texts node is removed (cleared)
   textsRef.on('value', snapshot => {
-    if (!snapshot.exists()) {
-      // Texts were cleared
+    if (!isJoiningRoom && !snapshot.exists() && textsCache.size > 0) {
+      // Texts were cleared by someone else
       textsCache.clear();
       drawAll();
     }
@@ -549,7 +577,10 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', async () => 
       if (!currentRoomId) return;
       if (!confirm('Clear entire canvas? This will remove all drawings and text for everyone.')) return;
       try {
-        // Remove the data from Firebase
+        // Set a cleared flag first
+        await db.ref(`rooms/${currentRoomId}/cleared`).set(Date.now());
+        
+        // Then remove the data from Firebase
         await db.ref(`rooms/${currentRoomId}/lines`).remove();
         await db.ref(`rooms/${currentRoomId}/texts`).remove();
         
