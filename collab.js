@@ -1,5 +1,4 @@
-
-\// ==================== Firebase Config ====================
+// ==================== Firebase Config ====================
 const firebaseConfig = {
   apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
   authDomain: "cooperscodeart.firebaseapp.com",
@@ -24,6 +23,10 @@ const rtcConfig = {
     { urls: 'stun:stun1.l.google.com:19302' }
   ]
 };
+
+// Make these functions global so onclick attributes work
+window.toggleAudio = toggleAudio;
+window.toggleVideo = toggleVideo;
 
 async function toggleAudio() {
   if (!isAudioEnabled) {
@@ -703,6 +706,8 @@ function updateRoomIndicator() {
   const audioBtn = document.getElementById('audioBtn');
   const videoBtn = document.getElementById('videoBtn');
 
+  console.log('updateRoomIndicator called', { currentRoomId, audioBtn, videoBtn });
+
   if (indicator && currentRoomId) {
     if (currentRoomId === 'public') {
       indicator.textContent = 'Public Canvas';
@@ -726,8 +731,14 @@ function updateRoomIndicator() {
       if (deleteBtn) deleteBtn.style.display = 'block';
       if (copyBtn) copyBtn.style.display = 'block';
       if (pageMenuBtn) pageMenuBtn.style.display = 'block';
-      if (audioBtn) audioBtn.style.display = 'inline-block';
-      if (videoBtn) videoBtn.style.display = 'inline-block';
+      if (audioBtn) {
+        audioBtn.style.display = 'inline-block';
+        console.log('Audio button should now be visible');
+      }
+      if (videoBtn) {
+        videoBtn.style.display = 'inline-block';
+        console.log('Video button should now be visible');
+      }
     }
   }
 }
