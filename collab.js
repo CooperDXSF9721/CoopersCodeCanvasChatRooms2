@@ -128,11 +128,23 @@ function setupRoomClearedListener() {
   });
 }
 
-function updatePageIndicator() {
+async function updatePageIndicator() {
   const indicator = document.getElementById('pageIndicator');
-  if (indicator) {
-    const pageNum = currentPageId.replace('page', '');
-    indicator.textContent = `Page ${pageNum}`;
+  if (indicator && currentRoomId) {
+    try {
+      const pageSnapshot = await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/name`).once('value');
+      const customName = pageSnapshot.val();
+      
+      if (customName) {
+        indicator.textContent = customName;
+      } else {
+        const pageNum = currentPageId.replace('page', '');
+        indicator.textContent = `Page ${pageNum}`;
+      }
+    } catch (err) {
+      const pageNum = currentPageId.replace('page', '');
+      indicator.textContent = `Page ${pageNum}`;
+    }
   }
 }
 
@@ -166,6 +178,7 @@ function updateRoomIndicator() {
   const roomCodeDisplay = document.getElementById('roomCodeDisplay');
   const deleteBtn = document.getElementById('deleteRoomBtn');
   const copyBtn = document.getElementById('copyRoomBtn');
+  const pageMenuBtn = document.getElementById('pageMenuBtn');
 
   if (indicator && currentRoomId) {
     if (currentRoomId === 'public') {
@@ -177,6 +190,7 @@ function updateRoomIndicator() {
       }
       if (deleteBtn) deleteBtn.style.display = 'none';
       if (copyBtn) copyBtn.style.display = 'none';
+      if (pageMenuBtn) pageMenuBtn.style.display = 'none';
     } else {
       indicator.textContent = currentRoomId;
       menuBtn?.classList.remove('public');
@@ -186,6 +200,7 @@ function updateRoomIndicator() {
       }
       if (deleteBtn) deleteBtn.style.display = 'block';
       if (copyBtn) copyBtn.style.display = 'block';
+      if (pageMenuBtn) pageMenuBtn.style.display = 'block';
     }
   }
 }
@@ -730,6 +745,10 @@ const pageDropdown = document.getElementById('pageDropdown');
 const pageMenuBtn = document.getElementById('pageMenuBtn');
 
 pageMenuBtn?.addEventListener('click', () => {
+  // Only show page menu in private rooms
+  if (currentRoomId === 'public') {
+    return;
+  }
   pageDropdown.classList.toggle('show');
 });
 
@@ -752,7 +771,7 @@ async function loadPagesList() {
     
     if (!pages) {
       // Create default page 1
-      const pageBtn = createPageButton('page1', 1, true);
+      const pageBtn = createPageButton('page1', 1, 'Page 1', true);
       pageListEl.appendChild(pageBtn);
       return;
     }
@@ -767,7 +786,8 @@ async function loadPagesList() {
     pageIds.forEach(pageId => {
       const pageNum = parseInt(pageId.replace('page', ''));
       const isActive = pageId === currentPageId;
-      const pageBtn = createPageButton(pageId, pageNum, isActive);
+      const pageName = pages[pageId].name || `Page ${pageNum}`;
+      const pageBtn = createPageButton(pageId, pageNum, pageName, isActive);
       pageListEl.appendChild(pageBtn);
     });
     
@@ -776,16 +796,124 @@ async function loadPagesList() {
   }
 }
 
-function createPageButton(pageId, pageNum, isActive) {
+function createPageButton(pageId, pageNum, pageName, isActive) {
+  const container = document.createElement('div');
+  container.style.cssText = `
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 8px;
+    position: relative;
+  `;
+  
+  const buttonGroup = document.createElement('div');
+  buttonGroup.style.cssText = `
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  `;
+  
+  const renameBtn = document.createElement('button');
+  renameBtn.textContent = '✏️';
+  renameBtn.title = 'Rename page';
+  renameBtn.style.cssText = `
+    padding: 4px;
+    background: hsl(220, 90%, 56%);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `;
+  renameBtn.onclick = async (e) => {
+    e.stopPropagation();
+    const newName = prompt(`Enter new name for this page:`, pageName);
+    if (newName && newName.trim()) {
+      try {
+        await db.ref(`rooms/${currentRoomId}/pages/${pageId}/name`).set(newName.trim());
+        loadPagesList();
+        if (pageId === currentPageId) {
+          updatePageIndicator();
+        }
+      } catch (err) {
+        console.error('Error renaming page:', err);
+        alert('Failed to rename page. Please try again.');
+      }
+    }
+  };
+  
+  const deleteBtn = document.createElement('button');
+  deleteBtn.textContent = '🗑️';
+  deleteBtn.title = 'Delete page';
+  deleteBtn.style.cssText = `
+    padding: 4px;
+    background: hsl(0, 84%, 48%);
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  `;
+  deleteBtn.onclick = async (e) => {
+    e.stopPropagation();
+    
+    // Check if this is the last page
+    try {
+      const pagesSnapshot = await db.ref(`rooms/${currentRoomId}/pages`).once('value');
+      const pages = pagesSnapshot.val();
+      const pageCount = pages ? Object.keys(pages).length : 0;
+      
+      if (pageCount <= 1) {
+        alert('Sorry, you must have at least one page.');
+        return;
+      }
+    } catch (err) {
+      console.error('Error checking page count:', err);
+    }
+    
+    if (confirm(`Are you sure you want to delete "${pageName}"? This will remove all content on this page.`)) {
+      try {
+        // If deleting the current page, switch to page 1 first
+        if (pageId === currentPageId) {
+          await switchPage('page1');
+        }
+        
+        await db.ref(`rooms/${currentRoomId}/pages/${pageId}`).remove();
+        loadPagesList();
+      } catch (err) {
+        console.error('Error deleting page:', err);
+        alert('Failed to delete page. Please try again.');
+      }
+    }
+  };
+  
+  buttonGroup.appendChild(renameBtn);
+  buttonGroup.appendChild(deleteBtn);
+  
   const btn = document.createElement('button');
-  btn.textContent = `Page ${pageNum}`;
+  btn.textContent = pageName;
   btn.className = isActive ? 'page-btn active' : 'page-btn';
+  btn.style.flex = '1';
   btn.onclick = () => {
     switchPage(pageId);
     pageDropdown.classList.remove('show');
-    loadPagesList(); // Refresh list to update active state
+    loadPagesList();
   };
-  return btn;
+  
+  container.appendChild(buttonGroup);
+  container.appendChild(btn);
+  
+  return container;
 }
 
 document.getElementById('createPageBtn')?.addEventListener('click', async () => {
@@ -821,7 +949,8 @@ document.getElementById('createPageBtn')?.addEventListener('click', async () => 
 
 // Refresh pages list when dropdown is opened
 pageMenuBtn?.addEventListener('click', () => {
-  if (pageDropdown.classList.contains('show')) {
+  // Only load pages list if not in public room
+  if (currentRoomId !== 'public' && pageDropdown.classList.contains('show')) {
     loadPagesList();
   }
 });
