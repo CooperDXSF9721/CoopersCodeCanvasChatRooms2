@@ -551,7 +551,7 @@ function drawMove(x, y) {
       }
     });
   }
-  linesRef.push({ points, color: brushColor, width: brushSize, erase: eraserActive });
+  linesRef.push({ points, color: brushColor, width: brushSize, erase: eraserActive, timestamp: Date.now() });
   current.x = x;
   current.y = y;
 }
@@ -791,7 +791,7 @@ function addTextToCanvas() {
     return;
   }
   
-  textsRef.push({ x, y, text: content, size, color: brushColor, font });
+  textsRef.push({ x, y, text: content, size, color: brushColor, font, timestamp: Date.now() });
   freeTextInput.value = '';
 }
 
@@ -1189,12 +1189,31 @@ pageMenuBtn?.addEventListener('click', () => {
           
           const roomData = rooms[roomId];
           const password = roomData.password || 'None';
-          const lineCount = roomData.lines ? Object.keys(roomData.lines).length : 0;
-          const textCount = roomData.texts ? Object.keys(roomData.texts).length : 0;
           
           let lastActivity = 'Unknown';
           let lastTimestamp = 0;
           
+          // Check all pages for activity
+          if (roomData.pages) {
+            Object.values(roomData.pages).forEach(page => {
+              if (page.lines) {
+                Object.values(page.lines).forEach(line => {
+                  if (line.timestamp && line.timestamp > lastTimestamp) {
+                    lastTimestamp = line.timestamp;
+                  }
+                });
+              }
+              if (page.texts) {
+                Object.values(page.texts).forEach(text => {
+                  if (text.timestamp && text.timestamp > lastTimestamp) {
+                    lastTimestamp = text.timestamp;
+                  }
+                });
+              }
+            });
+          }
+          
+          // Fallback to old structure for backwards compatibility
           if (roomData.lines) {
             Object.values(roomData.lines).forEach(line => {
               if (line.timestamp && line.timestamp > lastTimestamp) {
@@ -1214,6 +1233,21 @@ pageMenuBtn?.addEventListener('click', () => {
             const date = new Date(lastTimestamp);
             lastActivity = date.toLocaleString();
           }
+          
+          // Count total lines and texts across all pages
+          let lineCount = 0;
+          let textCount = 0;
+          
+          if (roomData.pages) {
+            Object.values(roomData.pages).forEach(page => {
+              if (page.lines) lineCount += Object.keys(page.lines).length;
+              if (page.texts) textCount += Object.keys(page.texts).length;
+            });
+          }
+          
+          // Fallback for old structure
+          if (roomData.lines) lineCount += Object.keys(roomData.lines).length;
+          if (roomData.texts) textCount += Object.keys(roomData.texts).length;
           
           const roomCard = document.createElement('div');
           roomCard.style.cssText = `
