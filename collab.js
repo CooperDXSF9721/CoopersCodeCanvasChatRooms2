@@ -36,6 +36,16 @@ function saveRoomToHistory(roomId) {
   }
 }
 
+function removeRoomFromHistory(roomId) {
+  try {
+    let history = JSON.parse(localStorage.getItem('roomHistory') || '[]');
+    history = history.filter(item => item.roomId !== roomId);
+    localStorage.setItem('roomHistory', JSON.stringify(history));
+  } catch (err) {
+    console.error('Error removing room from history:', err);
+  }
+}
+
 async function loadRoomHistory() {
   const historyContainer = document.getElementById('roomHistoryList');
   if (!historyContainer) return;
@@ -97,29 +107,51 @@ async function loadRoomHistory() {
       roomInfo.appendChild(roomIdText);
       roomInfo.appendChild(statusText);
       
-      const joinBtn = document.createElement('button');
-      joinBtn.textContent = isDeleted ? '✕' : 'Join';
-      joinBtn.disabled = isDeleted;
-      joinBtn.style.cssText = `
-        padding: 6px 14px;
-        background: ${isDeleted ? 'hsl(217, 20%, 30%)' : 'hsl(220, 90%, 56%)'};
-        color: ${isDeleted ? 'hsl(217, 10%, 60%)' : 'white'};
-        border: none;
-        border-radius: 6px;
-        cursor: ${isDeleted ? 'not-allowed' : 'pointer'};
-        font-size: 13px;
-        font-weight: 500;
-      `;
+      const btnContainer = document.createElement('div');
+      btnContainer.style.cssText = 'display: flex; gap: 6px;';
       
-      if (!isDeleted) {
+      if (isDeleted) {
+        // Show remove button for deleted rooms
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = 'Remove';
+        removeBtn.style.cssText = `
+          padding: 6px 14px;
+          background: hsl(0, 84%, 48%);
+          color: white;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 500;
+        `;
+        removeBtn.onclick = () => {
+          removeRoomFromHistory(roomId);
+          loadRoomHistory();
+        };
+        btnContainer.appendChild(removeBtn);
+      } else {
+        // Show join button for active rooms
+        const joinBtn = document.createElement('button');
+        joinBtn.textContent = 'Join';
+        joinBtn.style.cssText = `
+          padding: 6px 14px;
+          background: hsl(220, 90%, 56%);
+          color: white;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 500;
+        `;
         joinBtn.onclick = () => {
           joinRoom(roomId);
           roomDropdown.classList.remove('show');
         };
+        btnContainer.appendChild(joinBtn);
       }
       
       roomItem.appendChild(roomInfo);
-      roomItem.appendChild(joinBtn);
+      roomItem.appendChild(btnContainer);
       historyContainer.appendChild(roomItem);
     }
     
