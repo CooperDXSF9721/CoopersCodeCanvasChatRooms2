@@ -11,6 +11,134 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
+// ==================== Room History Management ====================
+function saveRoomToHistory(roomId) {
+  if (roomId === 'public') return;
+  
+  try {
+    let history = JSON.parse(localStorage.getItem('roomHistory') || '[]');
+    
+    // Remove if already exists (to update timestamp)
+    history = history.filter(item => item.roomId !== roomId);
+    
+    // Add to beginning of array
+    history.unshift({
+      roomId: roomId,
+      timestamp: Date.now()
+    });
+    
+    // Keep only last 10 rooms
+    history = history.slice(0, 10);
+    
+    localStorage.setItem('roomHistory', JSON.stringify(history));
+  } catch (err) {
+    console.error('Error saving room to history:', err);
+  }
+}
+
+async function loadRoomHistory() {
+  const historyContainer = document.getElementById('roomHistoryList');
+  if (!historyContainer) return;
+  
+  try {
+    const history = JSON.parse(localStorage.getItem('roomHistory') || '[]');
+    
+    if (history.length === 0) {
+      historyContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No recent rooms</p>';
+      return;
+    }
+    
+    historyContainer.innerHTML = '';
+    
+    for (const item of history) {
+      const roomId = item.roomId;
+      
+      // Check if room still exists
+      const roomSnapshot = await db.ref(`rooms/${roomId}`).once('value');
+      const roomData = roomSnapshot.val();
+      const isDeleted = !roomData || roomData.deleted === true;
+      
+      const roomItem = document.createElement('div');
+      roomItem.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px;
+        margin-bottom: 8px;
+        background: hsl(217, 20%, 20%);
+        border: 1px solid hsl(217, 20%, 25%);
+        border-radius: 8px;
+        ${isDeleted ? 'opacity: 0.5;' : ''}
+      `;
+      
+      const roomInfo = document.createElement('div');
+      roomInfo.style.cssText = 'flex: 1;';
+      
+      const roomIdText = document.createElement('div');
+      roomIdText.textContent = roomId;
+      roomIdText.style.cssText = `
+        color: ${isDeleted ? 'hsl(0, 60%, 50%)' : 'hsl(220, 90%, 56%)'};
+        font-weight: 600;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 14px;
+        margin-bottom: 4px;
+      `;
+      
+      const statusText = document.createElement('div');
+      statusText.style.cssText = 'color: hsl(217, 10%, 70%); font-size: 12px;';
+      
+      if (isDeleted) {
+        statusText.textContent = '🔒 Room Deleted';
+      } else {
+        const timeAgo = getTimeAgo(item.timestamp);
+        statusText.textContent = `Last visited ${timeAgo}`;
+      }
+      
+      roomInfo.appendChild(roomIdText);
+      roomInfo.appendChild(statusText);
+      
+      const joinBtn = document.createElement('button');
+      joinBtn.textContent = isDeleted ? '✕' : 'Join';
+      joinBtn.disabled = isDeleted;
+      joinBtn.style.cssText = `
+        padding: 6px 14px;
+        background: ${isDeleted ? 'hsl(217, 20%, 30%)' : 'hsl(220, 90%, 56%)'};
+        color: ${isDeleted ? 'hsl(217, 10%, 60%)' : 'white'};
+        border: none;
+        border-radius: 6px;
+        cursor: ${isDeleted ? 'not-allowed' : 'pointer'};
+        font-size: 13px;
+        font-weight: 500;
+      `;
+      
+      if (!isDeleted) {
+        joinBtn.onclick = () => {
+          joinRoom(roomId);
+          roomDropdown.classList.remove('show');
+        };
+      }
+      
+      roomItem.appendChild(roomInfo);
+      roomItem.appendChild(joinBtn);
+      historyContainer.appendChild(roomItem);
+    }
+    
+  } catch (err) {
+    console.error('Error loading room history:', err);
+    historyContainer.innerHTML = '<p style="color: hsl(0, 60%, 50%); font-size: 13px; padding: 8px;">Error loading history</p>';
+  }
+}
+
+function getTimeAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return `${Math.floor(seconds / 604800)}w ago`;
+}
+
 // ==================== Room Management ====================
 let currentRoomId = null;
 let currentPageId = 'page1'; // Default page
@@ -99,6 +227,9 @@ async function joinRoom(roomId, password = null) {
   updatePageIndicator();
 
   window.location.hash = roomId;
+  
+  // Save to history
+  saveRoomToHistory(roomId);
   
   // Reset the flag after listeners are set up
   setTimeout(() => { isJoiningRoom = false; }, 1000);
@@ -678,6 +809,10 @@ const roomMenuBtn = document.getElementById('roomMenuBtn');
 
 roomMenuBtn?.addEventListener('click', () => {
   roomDropdown.classList.toggle('show');
+  // Load room history when menu opens
+  if (roomDropdown.classList.contains('show')) {
+    loadRoomHistory();
+  }
 });
 
 document.addEventListener('click', (e) => {
