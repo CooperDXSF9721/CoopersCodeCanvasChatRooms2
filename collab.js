@@ -1,4 +1,5 @@
-// ==================== Firebase Config ====================
+
+\// ==================== Firebase Config ====================
 const firebaseConfig = {
   apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
   authDomain: "cooperscodeart.firebaseapp.com",
@@ -612,6 +613,11 @@ async function joinRoom(roomId, password = null) {
 
   window.location.hash = roomId;
   
+  // Clean up media when switching rooms
+  if (localStream) {
+    stopMedia();
+  }
+  
   // Save to history
   saveRoomToHistory(roomId);
   
@@ -694,6 +700,8 @@ function updateRoomIndicator() {
   const deleteBtn = document.getElementById('deleteRoomBtn');
   const copyBtn = document.getElementById('copyRoomBtn');
   const pageMenuBtn = document.getElementById('pageMenuBtn');
+  const audioBtn = document.getElementById('audioBtn');
+  const videoBtn = document.getElementById('videoBtn');
 
   if (indicator && currentRoomId) {
     if (currentRoomId === 'public') {
@@ -706,6 +714,8 @@ function updateRoomIndicator() {
       if (deleteBtn) deleteBtn.style.display = 'none';
       if (copyBtn) copyBtn.style.display = 'none';
       if (pageMenuBtn) pageMenuBtn.style.display = 'none';
+      if (audioBtn) audioBtn.style.display = 'none';
+      if (videoBtn) videoBtn.style.display = 'none';
     } else {
       indicator.textContent = currentRoomId;
       menuBtn?.classList.remove('public');
@@ -716,6 +726,8 @@ function updateRoomIndicator() {
       if (deleteBtn) deleteBtn.style.display = 'block';
       if (copyBtn) copyBtn.style.display = 'block';
       if (pageMenuBtn) pageMenuBtn.style.display = 'block';
+      if (audioBtn) audioBtn.style.display = 'inline-block';
+      if (videoBtn) videoBtn.style.display = 'inline-block';
     }
   }
 }
