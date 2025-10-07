@@ -299,6 +299,11 @@
       overflow-y: auto;
     }
 
+    #activeUsersList {
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
     .divider {
       height: 1px;
       background: hsl(217, 22%, 20%);
@@ -344,8 +349,6 @@
     <button id="eraserBtn" class="secondary" data-testid="button-eraser">Eraser</button>
     <input type="number" id="textSizePicker" min="10" max="200" value="40" title="Text size">
     <input type="text" id="freeTextInput" placeholder="Add text (press Enter)..." data-testid="input-text">
-    <button id="audioBtn" class="secondary" style="display: none;" onclick="toggleAudio()">🎤 Audio</button>
-    <button id="videoBtn" class="secondary" style="display: none;" onclick="toggleVideo()">📹 Video</button>
     <button id="clearBtn" class="destructive" style="display: none;" data-testid="button-clear">Clear Canvas</button>
   </div>
 
@@ -361,6 +364,11 @@
         <button id="copyRoomBtn" class="secondary" data-testid="button-copy-room">Copy Room Code</button>
         <button id="deleteRoomBtn" class="destructive" data-testid="button-delete-room">Delete Room</button>
         <button id="goPublicBtn" class="secondary" data-testid="button-go-public">Go to Public Canvas</button>
+      </div>
+      <div class="divider" id="activeUsersDivider" style="display: none;"></div>
+      <div class="dropdown-section" id="activeUsersSection" style="display: none;">
+        <h3>Active Users (<span id="activeUserCount">0</span>)</h3>
+        <div id="activeUsersList"></div>
       </div>
       <div class="divider"></div>
       <div class="dropdown-section">
