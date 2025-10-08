@@ -25,25 +25,30 @@ function getUserName() {
   // Try to get saved name from memory storage
   if (userName) return userName;
   
-  // Check if we have a name in memory (simulated storage)
+  // Check if we have a saved name in memory
   const savedName = window.userNameCache;
   if (savedName) {
     userName = savedName;
     return userName;
   }
   
-  // Prompt for name
-  const name = prompt('Welcome! Please enter your name:');
-  if (name && name.trim()) {
-    userName = name.trim();
-    window.userNameCache = userName; // Save to memory
-    return userName;
-  }
-  
-  // Default name if user cancels
+  // Generate a default anonymous name
   userName = 'Anonymous';
   window.userNameCache = userName;
   return userName;
+}
+
+function changeUserName() {
+  const newName = prompt('Enter your name:', userName || 'Anonymous');
+  if (newName && newName.trim()) {
+    userName = newName.trim();
+    window.userNameCache = userName;
+    
+    // Update presence if in a private room
+    if (presenceRef && currentRoomId !== 'public') {
+      presenceRef.update({ name: userName });
+    }
+  }
 }
 
 function setupPresence(roomId) {
