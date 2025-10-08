@@ -11,6 +11,24 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
+// ==================== Storage Helper (Cookie-based) ====================
+function setCookie(name, value, days = 365) {
+  const expires = new Date();
+  expires.setTime(expires.getTime() + days * 24 * 60 * 60 * 1000);
+  document.cookie = `${name}=${encodeURIComponent(value)};expires=${expires.toUTCString()};path=/`;
+}
+
+function getCookie(name) {
+  const nameEQ = name + "=";
+  const ca = document.cookie.split(';');
+  for (let i = 0; i < ca.length; i++) {
+    let c = ca[i];
+    while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+    if (c.indexOf(nameEQ) === 0) return decodeURIComponent(c.substring(nameEQ.length, c.length));
+  }
+  return null;
+}
+
 // ==================== User Management ====================
 let userName = null;
 let userSessionId = null;
@@ -25,8 +43,8 @@ function getUserName() {
   // Try to get saved name from memory storage
   if (userName) return userName;
   
-  // Check if we have a saved name in memory
-  const savedName = window.userNameCache;
+  // Check if we have a saved name in cookies
+  const savedName = getCookie('userName');
   if (savedName) {
     userName = savedName;
     return userName;
@@ -34,7 +52,7 @@ function getUserName() {
   
   // Generate a default anonymous name
   userName = 'Anonymous';
-  window.userNameCache = userName;
+  setCookie('userName', userName);
   return userName;
 }
 
@@ -42,7 +60,7 @@ function changeUserName() {
   const newName = prompt('Enter your name:', userName || 'Anonymous');
   if (newName && newName.trim()) {
     userName = newName.trim();
-    window.userNameCache = userName;
+    setCookie('userName', userName);
     
     // Update presence if in a private room
     if (presenceRef && currentRoomId !== 'public') {
@@ -166,7 +184,8 @@ function saveRoomToHistory(roomId) {
   if (roomId === 'public') return;
   
   try {
-    let history = window.roomHistoryCache || [];
+    const savedHistory = getCookie('roomHistory');
+    let history = savedHistory ? JSON.parse(savedHistory) : [];
     
     // Remove if already exists (to update timestamp)
     history = history.filter(item => item.roomId !== roomId);
@@ -180,7 +199,7 @@ function saveRoomToHistory(roomId) {
     // Keep only last 10 rooms
     history = history.slice(0, 10);
     
-    window.roomHistoryCache = history;
+    setCookie('roomHistory', JSON.stringify(history));
   } catch (err) {
     console.error('Error saving room to history:', err);
   }
@@ -188,9 +207,10 @@ function saveRoomToHistory(roomId) {
 
 function removeRoomFromHistory(roomId) {
   try {
-    let history = window.roomHistoryCache || [];
+    const savedHistory = getCookie('roomHistory');
+    let history = savedHistory ? JSON.parse(savedHistory) : [];
     history = history.filter(item => item.roomId !== roomId);
-    window.roomHistoryCache = history;
+    setCookie('roomHistory', JSON.stringify(history));
   } catch (err) {
     console.error('Error removing room from history:', err);
   }
@@ -201,7 +221,8 @@ async function loadRoomHistory() {
   if (!historyContainer) return;
   
   try {
-    const history = window.roomHistoryCache || [];
+    const savedHistory = getCookie('roomHistory');
+    const history = savedHistory ? JSON.parse(savedHistory) : [];
     
     if (history.length === 0) {
       historyContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No recent rooms</p>';
@@ -1509,14 +1530,6 @@ pageMenuBtn?.addEventListener('click', () => {
 window.addEventListener('load', () => {
   // Get or set user name
   getUserName();
-  
-  // Set up change name button
-  const changeNameBtn = document.getElementById('changeNameBtn');
-  if (changeNameBtn) {
-    changeNameBtn.addEventListener('click', () => {
-      changeUserName();
-    });
-  }
   
   const hashRoom = window.location.hash.substring(1);
   if (hashRoom) {
