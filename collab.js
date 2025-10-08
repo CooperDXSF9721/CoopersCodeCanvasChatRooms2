@@ -1507,8 +1507,16 @@ pageMenuBtn?.addEventListener('click', () => {
 
 // ==================== Initialize ====================
 window.addEventListener('load', () => {
-  // Get or prompt for user name
+  // Get or set user name
   getUserName();
+  
+  // Set up change name button
+  const changeNameBtn = document.getElementById('changeNameBtn');
+  if (changeNameBtn) {
+    changeNameBtn.addEventListener('click', () => {
+      changeUserName();
+    });
+  }
   
   const hashRoom = window.location.hash.substring(1);
   if (hashRoom) {
