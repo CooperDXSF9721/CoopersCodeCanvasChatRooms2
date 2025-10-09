@@ -326,10 +326,11 @@
       z-index: 1000;
     }
 
+    /* Camera Styles */
     .camera-container {
       position: fixed;
-      top: 150px;
-      right: 16px;
+      bottom: 16px;
+      left: 16px;
       z-index: 1000;
       display: none;
     }
@@ -358,9 +359,9 @@
     .camera-panel {
       position: absolute;
       bottom: calc(100% + 8px);
-      right: 0;
-      width: 350px;
-      max-height: 600px;
+      left: 0;
+      width: 280px;
+      max-height: 70vh;
       background: hsl(217, 25%, 16%);
       border: 1px solid hsl(217, 22%, 20%);
       border-radius: 12px;
@@ -372,7 +373,7 @@
 
     .camera-header {
       background: hsl(217, 25%, 18%);
-      padding: 12px 16px;
+      padding: 10px 12px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -381,7 +382,7 @@
 
     .camera-header h3 {
       margin: 0;
-      font-size: 16px;
+      font-size: 14px;
       font-weight: 600;
       color: hsl(217, 10%, 92%);
     }
@@ -390,11 +391,11 @@
       background: transparent;
       border: none;
       color: hsl(217, 10%, 70%);
-      font-size: 20px;
+      font-size: 18px;
       cursor: pointer;
       padding: 0;
-      width: 24px;
-      height: 24px;
+      width: 22px;
+      height: 22px;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -410,13 +411,13 @@
     .camera-videos {
       flex: 1;
       overflow-y: auto;
-      padding: 12px;
+      padding: 10px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 10px;
       background: hsl(217, 25%, 14%);
-      max-height: 450px;
-      min-height: 200px;
+      max-height: calc(70vh - 120px);
+      min-height: 150px;
     }
 
     .camera-video-item {
@@ -426,12 +427,12 @@
       overflow: hidden;
       background: hsl(217, 20%, 20%);
       border: 2px solid hsl(217, 20%, 25%);
-      min-height: 180px;
+      min-height: 120px;
     }
 
     .camera-video-item video {
       width: 100%;
-      height: 180px;
+      height: 120px;
       object-fit: cover;
       display: block;
       border-radius: 6px;
@@ -442,12 +443,12 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      min-height: 180px;
+      min-height: 120px;
       background: hsl(217, 20%, 18%);
     }
 
     .camera-video-item.disabled .user-name-display {
-      font-size: 20px;
+      font-size: 16px;
       font-weight: 600;
       color: hsl(217, 10%, 92%);
       text-align: center;
@@ -455,19 +456,19 @@
 
     .camera-video-label {
       position: absolute;
-      bottom: 8px;
-      left: 8px;
+      bottom: 6px;
+      left: 6px;
       background: rgba(0, 0, 0, 0.8);
       color: white;
-      padding: 6px 10px;
-      border-radius: 6px;
-      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
       font-weight: 600;
     }
 
     .camera-controls {
       display: flex;
-      padding: 12px;
+      padding: 10px;
       gap: 8px;
       background: hsl(217, 25%, 18%);
       border-top: 1px solid hsl(217, 22%, 20%);
@@ -475,13 +476,13 @@
 
     .camera-toggle-btn {
       flex: 1;
-      padding: 12px;
+      padding: 10px;
       background: hsl(142, 76%, 55%);
       color: white;
       border: none;
       border-radius: 8px;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
       transition: all 150ms;
     }
@@ -689,9 +690,19 @@
         right: 16px;
       }
 
+      .camera-container {
+        bottom: 120px;
+        left: 16px;
+      }
+
       .camera-panel {
         width: calc(100vw - 32px);
-        max-width: 320px;
+        max-width: 280px;
+        max-height: 60vh;
+      }
+
+      .camera-videos {
+        max-height: calc(60vh - 120px);
       }
     }
   </style>
