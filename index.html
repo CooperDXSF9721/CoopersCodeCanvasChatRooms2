@@ -339,15 +339,16 @@
       #roomDropdown, #pageDropdown {
         min-width: 75vw;
         max-width: 75vw;
-        right: 50%;
-        transform: translateX(50%) translateY(-8px);
+        left: 50%;
+        right: auto;
+        transform: translateX(-50%) translateY(-8px);
         max-height: calc(100vh - 180px);
         bottom: auto;
         top: calc(100% + 8px);
       }
 
       #roomDropdown.show, #pageDropdown.show {
-        transform: translateX(50%) translateY(0);
+        transform: translateX(-50%) translateY(0);
       }
 
       /* Make dropdowns scrollable */
