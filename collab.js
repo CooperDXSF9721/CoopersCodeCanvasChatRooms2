@@ -41,17 +41,14 @@ function generateSessionId() {
 }
 
 function getUserName() {
-  // Try to get saved name from memory storage
   if (userName) return userName;
   
-  // Check if we have a saved name in localStorage
   const savedName = getStorage('userName');
   if (savedName) {
     userName = savedName;
     return userName;
   }
   
-  // Generate a default anonymous name
   userName = 'Anonymous';
   setStorage('userName', userName);
   return userName;
@@ -63,7 +60,6 @@ function changeUserName() {
     userName = newName.trim();
     setStorage('userName', userName);
     
-    // Update presence if in a private room
     if (presenceRef && currentRoomId !== 'public') {
       presenceRef.update({ name: userName });
     }
@@ -73,7 +69,6 @@ function changeUserName() {
 function setupPresence(roomId) {
   if (!roomId || roomId === 'public') return;
   
-  // Clean up previous presence
   if (presenceRef) {
     presenceRef.remove();
     presenceRef = null;
@@ -84,23 +79,18 @@ function setupPresence(roomId) {
     usersRef = null;
   }
   
-  // Generate unique session ID for this user
   userSessionId = generateSessionId();
   
-  // Set up presence reference
   presenceRef = db.ref(`rooms/${roomId}/users/${userSessionId}`);
   usersRef = db.ref(`rooms/${roomId}/users`);
   
-  // Set user data
   presenceRef.set({
     name: userName,
     timestamp: firebase.database.ServerValue.TIMESTAMP
   });
   
-  // Remove user when they disconnect
   presenceRef.onDisconnect().remove();
   
-  // Listen for user changes
   usersRef.on('value', snapshot => {
     updateActiveUsers(snapshot);
   });
@@ -127,7 +117,6 @@ function updateActiveUsers(snapshot) {
     timestamp: data.timestamp || 0
   }));
   
-  // Sort by join time (oldest first)
   userList.sort((a, b) => a.timestamp - b.timestamp);
   
   if (usersContainer) {
@@ -163,7 +152,6 @@ function updateActiveUsers(snapshot) {
         font-weight: 500;
       `;
       
-      // Highlight current user
       if (user.id === userSessionId) {
         nameText.textContent += ' (you)';
         nameText.style.color = 'hsl(220, 90%, 56%)';
@@ -180,6 +168,119 @@ function updateActiveUsers(snapshot) {
   }
 }
 
+// ==================== Chat System ====================
+let chatMessagesRef = null;
+let chatCache = [];
+
+function setupChatForRoom(roomId) {
+  if (roomId === 'public') {
+    const chatContainer = document.getElementById('chatContainer');
+    if (chatContainer) chatContainer.style.display = 'none';
+    
+    if (chatMessagesRef) {
+      chatMessagesRef.off();
+      chatMessagesRef = null;
+    }
+    chatCache = [];
+    return;
+  }
+  
+  const chatContainer = document.getElementById('chatContainer');
+  if (chatContainer) chatContainer.style.display = 'flex';
+  
+  if (chatMessagesRef) {
+    chatMessagesRef.off();
+  }
+  
+  chatMessagesRef = db.ref(`rooms/${roomId}/chat`);
+  chatCache = [];
+  
+  const messagesContainer = document.getElementById('chatMessages');
+  if (messagesContainer) messagesContainer.innerHTML = '';
+  
+  chatMessagesRef.on('child_added', snapshot => {
+    const msg = snapshot.val();
+    displayChatMessage(msg);
+    chatCache.push(msg);
+  });
+}
+
+function displayChatMessage(msg) {
+  const messagesContainer = document.getElementById('chatMessages');
+  if (!messagesContainer) return;
+  
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'chat-message';
+  
+  const isCurrentUser = msg.name === userName;
+  
+  messageDiv.style.cssText = `
+    margin: 8px 0;
+    padding: 10px 14px;
+    border-radius: 12px;
+    max-width: 75%;
+    font-size: 14px;
+    line-height: 1.4;
+    word-wrap: break-word;
+    ${isCurrentUser ? 'align-self: flex-end; background-color: hsl(220, 90%, 56%); color: white; border-bottom-right-radius: 4px;' : 'align-self: flex-start; background-color: hsl(217, 20%, 20%); color: hsl(217, 10%, 92%); border-bottom-left-radius: 4px;'}
+  `;
+  
+  const nameSpan = document.createElement('div');
+  nameSpan.style.cssText = `
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 4px;
+    ${isCurrentUser ? 'color: hsla(220, 90%, 98%, 0.9);' : 'color: hsl(220, 90%, 56%);'}
+  `;
+  nameSpan.textContent = isCurrentUser ? 'You' : msg.name;
+  
+  const textSpan = document.createElement('div');
+  textSpan.textContent = msg.text;
+  
+  messageDiv.appendChild(nameSpan);
+  messageDiv.appendChild(textSpan);
+  messagesContainer.appendChild(messageDiv);
+  
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function sendChatMessage() {
+  const input = document.getElementById('chatInput');
+  if (!input || !currentRoomId || currentRoomId === 'public') return;
+  
+  const text = input.value.trim();
+  if (!text) return;
+  
+  chatMessagesRef.push({
+    name: userName,
+    text: text,
+    timestamp: Date.now()
+  });
+  
+  input.value = '';
+}
+
+function toggleChatPanel() {
+  const chatPanel = document.getElementById('chatPanel');
+  const chatBtn = document.getElementById('chatMenuBtn');
+  
+  if (!chatPanel) return;
+  
+  const isVisible = chatPanel.style.display === 'flex';
+  chatPanel.style.display = isVisible ? 'none' : 'flex';
+  
+  if (chatBtn) {
+    chatBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
+  }
+  
+  if (!isVisible) {
+    const messagesContainer = document.getElementById('chatMessages');
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+}
+
 // ==================== Room History Management ====================
 function saveRoomToHistory(roomId) {
   if (roomId === 'public') return;
@@ -188,16 +289,13 @@ function saveRoomToHistory(roomId) {
     const savedHistory = getStorage('roomHistory');
     let history = savedHistory ? JSON.parse(savedHistory) : [];
     
-    // Remove if already exists (to update timestamp)
     history = history.filter(item => item.roomId !== roomId);
     
-    // Add to beginning of array
     history.unshift({
       roomId: roomId,
       timestamp: Date.now()
     });
     
-    // Keep only last 10 rooms
     history = history.slice(0, 10);
     
     setStorage('roomHistory', JSON.stringify(history));
@@ -235,7 +333,6 @@ async function loadRoomHistory() {
     for (const item of history) {
       const roomId = item.roomId;
       
-      // Check if room still exists
       const roomSnapshot = await db.ref(`rooms/${roomId}`).once('value');
       const roomData = roomSnapshot.val();
       const isDeleted = !roomData || roomData.deleted === true;
@@ -283,7 +380,6 @@ async function loadRoomHistory() {
       btnContainer.style.cssText = 'display: flex; gap: 6px;';
       
       if (isDeleted) {
-        // Show remove button for deleted rooms
         const removeBtn = document.createElement('button');
         removeBtn.textContent = 'Remove';
         removeBtn.style.cssText = `
@@ -302,7 +398,6 @@ async function loadRoomHistory() {
         };
         btnContainer.appendChild(removeBtn);
       } else {
-        // Show join button for active rooms
         const joinBtn = document.createElement('button');
         joinBtn.textContent = 'Join';
         joinBtn.style.cssText = `
@@ -345,7 +440,7 @@ function getTimeAgo(timestamp) {
 
 // ==================== Room Management ====================
 let currentRoomId = null;
-let currentPageId = 'page1'; // Default page
+let currentPageId = 'page1';
 let linesRef = null;
 let textsRef = null;
 let roomDeletedRef = null;
@@ -362,7 +457,6 @@ function generateRoomCode() {
 }
 
 async function joinRoom(roomId, password = null) {
-  // Check if room has password protection (skip for public)
   if (roomId !== 'public') {
     const roomRef = db.ref(`rooms/${roomId}`);
     const roomSnapshot = await roomRef.once('value');
@@ -415,7 +509,7 @@ async function joinRoom(roomId, password = null) {
   if (roomClearedRef) roomClearedRef.off();
 
   currentRoomId = roomId;
-  currentPageId = 'page1'; // Reset to page 1 when joining a new room
+  currentPageId = 'page1';
   linesRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/lines`);
   textsRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/texts`);
 
@@ -430,15 +524,13 @@ async function joinRoom(roomId, password = null) {
   updateRoomIndicator();
   updatePageIndicator();
   
-  // Set up presence tracking for private rooms
   setupPresence(roomId);
+  setupChatForRoom(roomId);
 
   window.location.hash = roomId;
   
-  // Save to history
   saveRoomToHistory(roomId);
   
-  // Reset the flag after listeners are set up
   setTimeout(() => { isJoiningRoom = false; }, 1000);
 }
 
@@ -458,7 +550,6 @@ function setupRoomClearedListener() {
   roomClearedRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`);
   roomClearedRef.on('value', snapshot => {
     if (!isJoiningRoom && snapshot.exists()) {
-      // Canvas was cleared
       linesCache.length = 0;
       textsCache.clear();
       drawAll();
@@ -489,7 +580,6 @@ async function updatePageIndicator() {
 async function switchPage(pageId) {
   if (pageId === currentPageId) return;
   
-  // Turn off old listeners
   if (linesRef) linesRef.off();
   if (textsRef) textsRef.off();
   if (roomClearedRef) roomClearedRef.off();
@@ -550,8 +640,7 @@ function updateRoomIndicator() {
 }
 
 function setupFirebaseListeners() {
-  // Store line keys to track them
-  const lineKeys = new Map(); // maps Firebase key to cache index
+  const lineKeys = new Map();
   
   linesRef.on('child_added', snapshot => {
     const line = snapshot.val();
@@ -575,10 +664,8 @@ function setupFirebaseListeners() {
     ctx.globalCompositeOperation = 'source-over';
   });
 
-  // Listen for when the entire lines node is removed (cleared)
   linesRef.on('value', snapshot => {
     if (!isJoiningRoom && !snapshot.exists() && linesCache.length > 0) {
-      // Lines were cleared by someone else
       linesCache.length = 0;
       lineKeys.clear();
       drawAll();
@@ -605,10 +692,8 @@ function setupFirebaseListeners() {
     drawAll();
   });
 
-  // Listen for when the entire texts node is removed (cleared)
   textsRef.on('value', snapshot => {
     if (!isJoiningRoom && !snapshot.exists() && textsCache.size > 0) {
-      // Texts were cleared by someone else
       textsCache.clear();
       drawAll();
     }
@@ -886,23 +971,19 @@ function findEmptySpace(textWidth, textHeight) {
   const step = 50;
   const maxAttempts = 100;
   
-  // Get toolbar dimensions to avoid placing text behind it
   const toolbar = document.getElementById('toolbar');
   const toolbarRect = toolbar ? toolbar.getBoundingClientRect() : null;
-  const toolbarPadding = 20; // Extra space around toolbar
+  const toolbarPadding = 20;
   
-  // Helper function to check if position overlaps with toolbar
   function overlapsWithToolbar(x, y, w, h) {
     if (!toolbarRect) return false;
     
-    // Check if text overlaps with toolbar area (with padding)
     return !(x > toolbarRect.right + toolbarPadding || 
              x + w < toolbarRect.left - toolbarPadding || 
              y > toolbarRect.bottom + toolbarPadding || 
              y + h < toolbarRect.top - toolbarPadding);
   }
   
-  // Helper function to check if a rectangle overlaps with any existing text
   function overlapsWithText(x, y, w, h) {
     let hasOverlap = false;
     textsCache.forEach(t => {
@@ -915,7 +996,6 @@ function findEmptySpace(textWidth, textHeight) {
       const tWidth = ctx.measureText(tContent).width;
       const tHeight = tSize;
       
-      // Check if rectangles overlap
       if (!(x + w + padding < t.x || 
             x > t.x + tWidth + padding || 
             y + h + padding < t.y || 
@@ -926,25 +1006,21 @@ function findEmptySpace(textWidth, textHeight) {
     return hasOverlap;
   }
   
-  // Start from a grid pattern
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const gridX = (attempt % 10) * step + 50;
     const gridY = Math.floor(attempt / 10) * step + 50;
     
-    // Make sure we stay within canvas bounds
     if (gridX + textWidth + padding > canvas.width || 
         gridY + textHeight + padding > canvas.height) {
       continue;
     }
     
-    // Check if it overlaps with toolbar or existing text
     if (!overlapsWithToolbar(gridX, gridY, textWidth, textHeight) &&
         !overlapsWithText(gridX, gridY, textWidth, textHeight)) {
       return { x: gridX, y: gridY };
     }
   }
   
-  // If no empty space found, place at random location (avoiding toolbar)
   let randomX, randomY;
   for (let i = 0; i < 20; i++) {
     randomX = Math.random() * (canvas.width - textWidth - 100) + 50;
@@ -955,7 +1031,6 @@ function findEmptySpace(textWidth, textHeight) {
     }
   }
   
-  // Last resort: place it in the middle-right area
   return {
     x: canvas.width - textWidth - 100,
     y: canvas.height / 2
@@ -968,27 +1043,22 @@ function addTextToCanvas() {
   const size = getTextSize();
   const font = getTextFont();
   
-  // Measure the text to find appropriate empty space
   ctx.font = `${size}px ${font}`;
   const textWidth = ctx.measureText(content).width;
   const textHeight = size;
   
-  // Check if text can fit anywhere on the canvas (with margins)
   const margin = 50;
   const maxWidth = canvas.width - (margin * 2);
   const maxHeight = canvas.height - (margin * 2);
   
   if (textWidth > maxWidth || textHeight > maxHeight) {
-    // Calculate the maximum font size that would fit
     let maxFontSize = size;
     
     if (textWidth > maxWidth) {
-      // Scale down based on width
       maxFontSize = Math.floor((maxWidth / textWidth) * size);
     }
     
     if (textHeight > maxHeight && maxFontSize > maxHeight) {
-      // Also check height constraint
       maxFontSize = Math.min(maxFontSize, maxHeight);
     }
     
@@ -998,7 +1068,6 @@ function addTextToCanvas() {
   
   const { x, y } = findEmptySpace(textWidth, textHeight);
   
-  // Final check: make sure the found position actually fits on canvas
   if (x + textWidth > canvas.width || y + textHeight > canvas.height) {
     alert(`Error: Cannot find space on canvas for text of this size.\n\nCurrent font size: ${size}px\nTry reducing the text size or clearing some existing text.`);
     return;
@@ -1008,7 +1077,6 @@ function addTextToCanvas() {
   freeTextInput.value = '';
 }
 
-// Add text when Enter key is pressed
 freeTextInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') {
     e.preventDefault();
@@ -1022,7 +1090,6 @@ const roomMenuBtn = document.getElementById('roomMenuBtn');
 
 roomMenuBtn?.addEventListener('click', () => {
   roomDropdown.classList.toggle('show');
-  // Load room history when menu opens
   if (roomDropdown.classList.contains('show')) {
     loadRoomHistory();
   }
@@ -1075,7 +1142,6 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', async () => 
   if (currentRoomId && currentRoomId !== 'public') {
     const confirmDelete = confirm(`Are you sure you want to delete room ${currentRoomId}? This will kick all users from the room.`);
     if (confirmDelete) {
-      // Turn off deletion listener before deleting
       if (roomDeletedRef) roomDeletedRef.off();
       
       await db.ref(`rooms/${currentRoomId}/deleted`).set(true);
@@ -1093,7 +1159,6 @@ const pageDropdown = document.getElementById('pageDropdown');
 const pageMenuBtn = document.getElementById('pageMenuBtn');
 
 pageMenuBtn?.addEventListener('click', () => {
-  // Only show page menu in private rooms
   if (currentRoomId === 'public') {
     return;
   }
@@ -1106,7 +1171,6 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Load and display pages
 async function loadPagesList() {
   const pageListEl = document.getElementById('pagesList');
   if (!pageListEl || !currentRoomId) return;
@@ -1118,13 +1182,11 @@ async function loadPagesList() {
     pageListEl.innerHTML = '';
     
     if (!pages) {
-      // Create default page 1
       const pageBtn = createPageButton('page1', 1, 'Page 1', true);
       pageListEl.appendChild(pageBtn);
       return;
     }
     
-    // Get all page numbers
     const pageIds = Object.keys(pages).sort((a, b) => {
       const numA = parseInt(a.replace('page', ''));
       const numB = parseInt(b.replace('page', ''));
@@ -1215,7 +1277,6 @@ function createPageButton(pageId, pageNum, pageName, isActive) {
   deleteBtn.onclick = async (e) => {
     e.stopPropagation();
     
-    // Check if this is the last page
     try {
       const pagesSnapshot = await db.ref(`rooms/${currentRoomId}/pages`).once('value');
       const pages = pagesSnapshot.val();
@@ -1231,7 +1292,6 @@ function createPageButton(pageId, pageNum, pageName, isActive) {
     
     if (confirm(`Are you sure you want to delete "${pageName}"? This will remove all content on this page.`)) {
       try {
-        // If deleting the current page, switch to page 1 first
         if (pageId === currentPageId) {
           await switchPage('page1');
         }
@@ -1266,7 +1326,6 @@ function createPageButton(pageId, pageNum, pageName, isActive) {
 
 document.getElementById('createPageBtn')?.addEventListener('click', async () => {
   try {
-    // Find the highest page number
     const pagesSnapshot = await db.ref(`rooms/${currentRoomId}/pages`).once('value');
     const pages = pagesSnapshot.val();
     
@@ -1281,10 +1340,8 @@ document.getElementById('createPageBtn')?.addEventListener('click', async () => 
     const newPageNum = maxPageNum + 1;
     const newPageId = `page${newPageNum}`;
     
-    // Create the new page with a marker
     await db.ref(`rooms/${currentRoomId}/pages/${newPageId}/created`).set(true);
     
-    // Switch to the new page
     switchPage(newPageId);
     pageDropdown.classList.remove('show');
     loadPagesList();
@@ -1295,9 +1352,7 @@ document.getElementById('createPageBtn')?.addEventListener('click', async () => 
   }
 });
 
-// Refresh pages list when dropdown is opened
 pageMenuBtn?.addEventListener('click', () => {
-  // Only load pages list if not in public room
   if (currentRoomId !== 'public' && pageDropdown.classList.contains('show')) {
     loadPagesList();
   }
@@ -1313,14 +1368,11 @@ pageMenuBtn?.addEventListener('click', () => {
       if (!currentRoomId) return;
       if (!confirm('Clear entire canvas? This will remove all drawings and text for everyone.')) return;
       try {
-        // Set a cleared flag first
         await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`).set(Date.now());
         
-        // Then remove the data from Firebase
         await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`).remove();
         await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`).remove();
         
-        // Clear local cache
         linesCache.length = 0;
         textsCache.clear();
         drawAll();
@@ -1406,7 +1458,6 @@ pageMenuBtn?.addEventListener('click', () => {
           let lastActivity = 'Unknown';
           let lastTimestamp = 0;
           
-          // Check all pages for activity
           if (roomData.pages) {
             Object.values(roomData.pages).forEach(page => {
               if (page.lines) {
@@ -1426,7 +1477,6 @@ pageMenuBtn?.addEventListener('click', () => {
             });
           }
           
-          // Fallback to old structure for backwards compatibility
           if (roomData.lines) {
             Object.values(roomData.lines).forEach(line => {
               if (line.timestamp && line.timestamp > lastTimestamp) {
@@ -1447,7 +1497,6 @@ pageMenuBtn?.addEventListener('click', () => {
             lastActivity = date.toLocaleString();
           }
           
-          // Count active users
           let activeUserCount = 0;
           if (roomData.users) {
             activeUserCount = Object.keys(roomData.users).length;
@@ -1529,7 +1578,6 @@ pageMenuBtn?.addEventListener('click', () => {
 
 // ==================== Initialize ====================
 window.addEventListener('load', () => {
-  // Check if device is a mobile phone (not tablet)
   const isMobilePhone = /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) && !(/iPad|Android(?!.*Mobile)/i.test(navigator.userAgent));
   
   if (isMobilePhone) {
@@ -1538,8 +1586,33 @@ window.addEventListener('load', () => {
     return;
   }
   
-  // Get or set user name
   getUserName();
+  
+  // Chat event listeners
+  const chatMenuBtn = document.getElementById('chatMenuBtn');
+  const closeChatBtn = document.getElementById('closeChatBtn');
+  const sendChatBtn = document.getElementById('sendChatBtn');
+  const chatInput = document.getElementById('chatInput');
+
+  if (chatMenuBtn) {
+    chatMenuBtn.addEventListener('click', toggleChatPanel);
+  }
+
+  if (closeChatBtn) {
+    closeChatBtn.addEventListener('click', toggleChatPanel);
+  }
+
+  if (sendChatBtn) {
+    sendChatBtn.addEventListener('click', sendChatMessage);
+  }
+
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        sendChatMessage();
+      }
+    });
+  }
   
   const hashRoom = window.location.hash.substring(1);
   if (hashRoom) {
