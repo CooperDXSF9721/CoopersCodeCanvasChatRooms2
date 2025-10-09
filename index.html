@@ -314,6 +314,134 @@
       margin: 16px 0;
     }
 
+    /* Chat Styles */
+    .chat-container {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      z-index: 1000;
+    }
+
+    .chat-menu-btn {
+      background: hsl(217, 25%, 16%);
+      border: 1px solid hsl(217, 22%, 18%);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0px 10px 20px -4px hsl(0 0% 0% / 0.45);
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      color: hsl(217, 10%, 92%);
+      transition: all 150ms;
+    }
+
+    .chat-menu-btn:hover {
+      background: hsl(217, 25%, 18%);
+    }
+
+    .chat-panel {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      right: 0;
+      width: 350px;
+      height: 450px;
+      background: hsl(217, 25%, 16%);
+      border: 1px solid hsl(217, 22%, 20%);
+      border-radius: 12px;
+      box-shadow: 0px 30px 60px -12px hsl(0 0% 0% / 0.60);
+      display: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .chat-header {
+      background: hsl(217, 25%, 18%);
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid hsl(217, 22%, 20%);
+    }
+
+    .chat-header h3 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+      color: hsl(217, 10%, 92%);
+    }
+
+    .close-chat-btn {
+      background: transparent;
+      border: none;
+      color: hsl(217, 10%, 70%);
+      font-size: 20px;
+      cursor: pointer;
+      padding: 0;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: all 150ms;
+    }
+
+    .close-chat-btn:hover {
+      background: hsl(217, 20%, 24%);
+      color: hsl(217, 10%, 92%);
+    }
+
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      background: hsl(217, 25%, 14%);
+    }
+
+    .chat-input-container {
+      display: flex;
+      padding: 12px;
+      gap: 8px;
+      background: hsl(217, 25%, 18%);
+      border-top: 1px solid hsl(217, 22%, 20%);
+    }
+
+    #chatInput {
+      flex: 1;
+      padding: 10px 12px;
+      background: hsl(217, 20%, 20%);
+      border: 1px solid hsl(217, 20%, 35%);
+      border-radius: 8px;
+      color: hsl(217, 10%, 92%);
+      font-size: 14px;
+      outline: none;
+    }
+
+    #sendChatBtn {
+      background-color: hsl(220, 90%, 56%);
+      color: white;
+      border: none;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 150ms;
+      margin: 0;
+    }
+
+    #sendChatBtn:hover {
+      background-color: hsl(220, 90%, 48%);
+    }
+
     @media (max-width: 768px) {
       #toolbar {
         top: auto;
@@ -353,7 +481,6 @@
         transform: translateX(-50%) translateY(0);
       }
 
-      /* Make dropdowns scrollable */
       .dropdown-section {
         max-height: none;
       }
@@ -368,6 +495,17 @@
 
       #pagesList {
         max-height: 200px;
+      }
+
+      .chat-container {
+        bottom: 120px;
+        right: 16px;
+      }
+      
+      .chat-panel {
+        width: calc(100vw - 32px);
+        max-width: 350px;
+        height: 400px;
       }
     }
   </style>
@@ -432,6 +570,25 @@
         <h3>Pages</h3>
         <div id="pagesList"></div>
         <button id="createPageBtn" data-testid="button-create-page">+ Create New Page</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Container (only visible in private rooms) -->
+  <div id="chatContainer" class="chat-container" style="display: none;">
+    <div id="chatMenuBtn" class="chat-menu-btn">
+      <span>💬</span>
+      <span>Chat</span>
+    </div>
+    <div id="chatPanel" class="chat-panel">
+      <div class="chat-header">
+        <h3>Room Chat</h3>
+        <button id="closeChatBtn" class="close-chat-btn">✕</button>
+      </div>
+      <div id="chatMessages" class="chat-messages"></div>
+      <div class="chat-input-container">
+        <input type="text" id="chatInput" placeholder="Type a message..." />
+        <button id="sendChatBtn">➤</button>
       </div>
     </div>
   </div>
