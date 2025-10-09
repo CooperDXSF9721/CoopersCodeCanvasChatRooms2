@@ -11,22 +11,23 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-// ==================== Storage Helper (Cookie-based) ====================
-function setCookie(name, value, days = 365) {
-  const expires = new Date();
-  expires.setTime(expires.getTime() + days * 24 * 60 * 60 * 1000);
-  document.cookie = `${name}=${encodeURIComponent(value)};expires=${expires.toUTCString()};path=/`;
+// ==================== Storage Helper ====================
+function setStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn('localStorage not available, data will not persist');
+    return false;
+  }
 }
 
-function getCookie(name) {
-  const nameEQ = name + "=";
-  const ca = document.cookie.split(';');
-  for (let i = 0; i < ca.length; i++) {
-    let c = ca[i];
-    while (c.charAt(0) === ' ') c = c.substring(1, c.length);
-    if (c.indexOf(nameEQ) === 0) return decodeURIComponent(c.substring(nameEQ.length, c.length));
+function getStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 // ==================== User Management ====================
@@ -43,8 +44,8 @@ function getUserName() {
   // Try to get saved name from memory storage
   if (userName) return userName;
   
-  // Check if we have a saved name in cookies
-  const savedName = getCookie('userName');
+  // Check if we have a saved name in localStorage
+  const savedName = getStorage('userName');
   if (savedName) {
     userName = savedName;
     return userName;
@@ -52,7 +53,7 @@ function getUserName() {
   
   // Generate a default anonymous name
   userName = 'Anonymous';
-  setCookie('userName', userName);
+  setStorage('userName', userName);
   return userName;
 }
 
@@ -60,7 +61,7 @@ function changeUserName() {
   const newName = prompt('Enter your name:', userName || 'Anonymous');
   if (newName && newName.trim()) {
     userName = newName.trim();
-    setCookie('userName', userName);
+    setStorage('userName', userName);
     
     // Update presence if in a private room
     if (presenceRef && currentRoomId !== 'public') {
@@ -184,7 +185,7 @@ function saveRoomToHistory(roomId) {
   if (roomId === 'public') return;
   
   try {
-    const savedHistory = getCookie('roomHistory');
+    const savedHistory = getStorage('roomHistory');
     let history = savedHistory ? JSON.parse(savedHistory) : [];
     
     // Remove if already exists (to update timestamp)
@@ -199,7 +200,7 @@ function saveRoomToHistory(roomId) {
     // Keep only last 10 rooms
     history = history.slice(0, 10);
     
-    setCookie('roomHistory', JSON.stringify(history));
+    setStorage('roomHistory', JSON.stringify(history));
   } catch (err) {
     console.error('Error saving room to history:', err);
   }
@@ -207,10 +208,10 @@ function saveRoomToHistory(roomId) {
 
 function removeRoomFromHistory(roomId) {
   try {
-    const savedHistory = getCookie('roomHistory');
+    const savedHistory = getStorage('roomHistory');
     let history = savedHistory ? JSON.parse(savedHistory) : [];
     history = history.filter(item => item.roomId !== roomId);
-    setCookie('roomHistory', JSON.stringify(history));
+    setStorage('roomHistory', JSON.stringify(history));
   } catch (err) {
     console.error('Error removing room from history:', err);
   }
@@ -221,7 +222,7 @@ async function loadRoomHistory() {
   if (!historyContainer) return;
   
   try {
-    const savedHistory = getCookie('roomHistory');
+    const savedHistory = getStorage('roomHistory');
     const history = savedHistory ? JSON.parse(savedHistory) : [];
     
     if (history.length === 0) {
@@ -1528,6 +1529,15 @@ pageMenuBtn?.addEventListener('click', () => {
 
 // ==================== Initialize ====================
 window.addEventListener('load', () => {
+  // Check if device is a mobile phone (not tablet)
+  const isMobilePhone = /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) && !(/iPad|Android(?!.*Mobile)/i.test(navigator.userAgent));
+  
+  if (isMobilePhone) {
+    alert('Sorry, this website is not compatible with mobile phones. Please use a tablet, laptop, or desktop computer.');
+    window.location.href = 'about:blank';
+    return;
+  }
+  
   // Get or set user name
   getUserName();
   
