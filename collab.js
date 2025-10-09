@@ -752,6 +752,7 @@ let brushSize = 4;
 let drawing = false;
 let current = { x: 0, y: 0 };
 let eraserActive = false;
+let eyedropperActive = false;
 
 function drawLineSmooth(x0, y0, x1, y1, color = brushColor, width = brushSize, erase = false) {
   const points = [];
@@ -782,6 +783,25 @@ function drawLineSmooth(x0, y0, x1, y1, color = brushColor, width = brushSize, e
 // ==================== Pointer Handling & Text Dragging ====================
 function startDrawing(x, y) { drawing = true; current.x = x; current.y = y; }
 function stopDrawing() { drawing = false; }
+
+function getColorAtPoint(x, y) {
+  const pixelData = ctx.getImageData(x, y, 1, 1).data;
+  const r = pixelData[0];
+  const g = pixelData[1];
+  const b = pixelData[2];
+  const a = pixelData[3];
+  
+  // If fully transparent, return white
+  if (a === 0) {
+    return '#ffffff';
+  }
+  
+  // Convert RGB to hex
+  return '#' + [r, g, b].map(x => {
+    const hex = x.toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  }).join('');
+}
 
 function textAtPoint(x, y) {
   let found = null;
@@ -821,6 +841,22 @@ function scheduleDragUpdate() {
 }
 
 function handlePointerDown(x, y) {
+  // Handle eyedropper mode
+  if (eyedropperActive) {
+    const pickedColor = getColorAtPoint(x, y);
+    brushColor = pickedColor;
+    colorPicker.value = pickedColor;
+    eyedropperActive = false;
+    canvas.classList.remove('eyedropper-mode');
+    
+    // Update eyedropper button state
+    const eyedropperBtn = document.getElementById('eyedropperBtn');
+    if (eyedropperBtn) {
+      eyedropperBtn.style.backgroundColor = '';
+    }
+    return;
+  }
+  
   const hit = textAtPoint(x, y);
   if (hit) {
     draggingTextKey = hit.key;
@@ -832,6 +868,11 @@ function handlePointerDown(x, y) {
 }
 
 function drawMove(x, y) {
+  // Don't draw if eyedropper is active
+  if (eyedropperActive) {
+    return;
+  }
+  
   if (draggingTextKey) {
     latestDragPos = { x: x - dragOffset.x, y: y - dragOffset.y };
     scheduleDragUpdate();
@@ -883,6 +924,7 @@ canvas.addEventListener('touchmove', e => {
 
 // ==================== UI Controls ====================
 const colorPicker = document.getElementById('colorPicker');
+const eyedropperBtn = document.getElementById('eyedropperBtn');
 const sizePicker = document.getElementById('sizePicker');
 if (sizePicker) {
   sizePicker.max = '200';
@@ -950,6 +992,28 @@ colorPicker.addEventListener('change', e => {
   brushColor = e.target.value;
   eraserActive = false;
   eraserBtn.style.backgroundColor = '';
+  eyedropperActive = false;
+  canvas.classList.remove('eyedropper-mode');
+  if (eyedropperBtn) {
+    eyedropperBtn.style.backgroundColor = '';
+  }
+});
+
+eyedropperBtn?.addEventListener('click', () => {
+  eyedropperActive = !eyedropperActive;
+  
+  if (eyedropperActive) {
+    // Disable eraser if active
+    eraserActive = false;
+    eraserBtn.style.backgroundColor = '';
+    
+    // Update button state
+    eyedropperBtn.style.backgroundColor = 'hsl(220, 90%, 56%)';
+    canvas.classList.add('eyedropper-mode');
+  } else {
+    eyedropperBtn.style.backgroundColor = '';
+    canvas.classList.remove('eyedropper-mode');
+  }
 });
 
 const updateBrushSize = (raw) => {
@@ -964,6 +1028,15 @@ sizePicker.addEventListener('change', e => updateBrushSize(e.target.value));
 eraserBtn.addEventListener('click', () => {
   eraserActive = !eraserActive;
   eraserBtn.style.backgroundColor = eraserActive ? 'orange' : '';
+  
+  // Disable eyedropper if active
+  if (eraserActive && eyedropperActive) {
+    eyedropperActive = false;
+    canvas.classList.remove('eyedropper-mode');
+    if (eyedropperBtn) {
+      eyedropperBtn.style.backgroundColor = '';
+    }
+  }
 });
 
 function findEmptySpace(textWidth, textHeight) {
