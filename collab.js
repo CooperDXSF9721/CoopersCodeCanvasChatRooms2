@@ -178,6 +178,16 @@ let cameraEnabled = false;
 let cameraStatusRef = null;
 let allCamerasRef = null;
 let peerConnections = new Map();
+let signalingRefs = new Map();
+
+// WebRTC Configuration with public STUN servers
+const rtcConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ]
+};
 
 async function setupCameraForRoom(roomId) {
   if (roomId === 'public') {
@@ -204,8 +214,42 @@ async function setupCameraForRoom(roomId) {
   
   cameraStatusRef.onDisconnect().remove();
   
-  allCamerasRef.on('value', snapshot => {
-    updateCameraDisplay(snapshot);
+  // Listen for other users' camera status
+  allCamerasRef.on('child_added', async snapshot => {
+    const sessionId = snapshot.key;
+    const data = snapshot.val();
+    
+    if (sessionId !== userSessionId && data.enabled && cameraEnabled) {
+      // Create peer connection for this user
+      await createPeerConnection(sessionId, true);
+    }
+    
+    updateCameraDisplay();
+  });
+  
+  allCamerasRef.on('child_changed', async snapshot => {
+    const sessionId = snapshot.key;
+    const data = snapshot.val();
+    
+    if (sessionId !== userSessionId) {
+      if (data.enabled && cameraEnabled) {
+        // Other user enabled camera
+        if (!peerConnections.has(sessionId)) {
+          await createPeerConnection(sessionId, true);
+        }
+      } else {
+        // Other user disabled camera
+        closePeerConnection(sessionId);
+      }
+    }
+    
+    updateCameraDisplay();
+  });
+  
+  allCamerasRef.on('child_removed', snapshot => {
+    const sessionId = snapshot.key;
+    closePeerConnection(sessionId);
+    updateCameraDisplay();
   });
 }
 
@@ -225,11 +269,125 @@ function cleanupCamera() {
     allCamerasRef = null;
   }
   
-  peerConnections.forEach(pc => pc.close());
+  // Close all peer connections
+  peerConnections.forEach((pc, sessionId) => {
+    closePeerConnection(sessionId);
+  });
   peerConnections.clear();
+  
+  // Clean up signaling listeners
+  signalingRefs.forEach((ref, sessionId) => {
+    ref.off();
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).remove();
+    db.ref(`rooms/${currentRoomId}/signaling/${sessionId}_${userSessionId}`).remove();
+  });
+  signalingRefs.clear();
   
   cameraEnabled = false;
   updateCameraButton();
+}
+
+async function createPeerConnection(remoteSessionId, isInitiator) {
+  if (peerConnections.has(remoteSessionId)) {
+    return peerConnections.get(remoteSessionId);
+  }
+  
+  const peerConnection = new RTCPeerConnection(rtcConfiguration);
+  peerConnections.set(remoteSessionId, peerConnection);
+  
+  // Add local stream tracks to peer connection
+  if (localStream) {
+    localStream.getTracks().forEach(track => {
+      peerConnection.addTrack(track, localStream);
+    });
+  }
+  
+  // Handle incoming remote stream
+  peerConnection.ontrack = (event) => {
+    const remoteStream = event.streams[0];
+    displayRemoteVideo(remoteSessionId, remoteStream);
+  };
+  
+  // Handle ICE candidates
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      const signalingPath = `rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`;
+      db.ref(signalingPath).push({
+        type: 'candidate',
+        candidate: event.candidate.toJSON(),
+        from: userSessionId
+      });
+    }
+  };
+  
+  // Set up signaling listener
+  const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
+  const signalingRef = db.ref(incomingSignalingPath);
+  signalingRefs.set(remoteSessionId, signalingRef);
+  
+  signalingRef.on('child_added', async snapshot => {
+    const message = snapshot.val();
+    
+    if (message.type === 'offer') {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      
+      db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+        type: 'answer',
+        answer: peerConnection.localDescription.toJSON(),
+        from: userSessionId
+      });
+    } else if (message.type === 'answer') {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+    } else if (message.type === 'candidate') {
+      await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+    }
+    
+    // Clean up old signaling messages
+    snapshot.ref.remove();
+  });
+  
+  // If initiator, create and send offer
+  if (isInitiator) {
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+      type: 'offer',
+      offer: peerConnection.localDescription.toJSON(),
+      from: userSessionId
+    });
+  }
+  
+  return peerConnection;
+}
+
+function closePeerConnection(remoteSessionId) {
+  const pc = peerConnections.get(remoteSessionId);
+  if (pc) {
+    pc.close();
+    peerConnections.delete(remoteSessionId);
+  }
+  
+  const signalingRef = signalingRefs.get(remoteSessionId);
+  if (signalingRef) {
+    signalingRef.off();
+    signalingRefs.delete(remoteSessionId);
+  }
+  
+  // Clean up signaling paths
+  if (currentRoomId) {
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
+    db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
+  }
+}
+
+function displayRemoteVideo(remoteSessionId, remoteStream) {
+  const videoElement = document.getElementById(`video-${remoteSessionId}`);
+  if (videoElement) {
+    videoElement.srcObject = remoteStream;
+  }
 }
 
 async function toggleCamera() {
@@ -240,7 +398,7 @@ async function toggleCamera() {
   if (cameraEnabled) {
     try {
       localStream = await navigator.mediaDevices.getUserMedia({ 
-        video: true, 
+        video: { width: 640, height: 480 }, 
         audio: false 
       });
       
@@ -248,6 +406,17 @@ async function toggleCamera() {
         enabled: true,
         name: userName
       });
+      
+      // Create peer connections with all other users who have cameras enabled
+      const snapshot = await allCamerasRef.once('value');
+      if (snapshot.exists()) {
+        const cameras = snapshot.val();
+        for (const [sessionId, data] of Object.entries(cameras)) {
+          if (sessionId !== userSessionId && data.enabled) {
+            await createPeerConnection(sessionId, false);
+          }
+        }
+      }
       
     } catch (err) {
       console.error('Error accessing camera:', err);
@@ -260,6 +429,11 @@ async function toggleCamera() {
       localStream = null;
     }
     
+    // Close all peer connections
+    peerConnections.forEach((pc, sessionId) => {
+      closePeerConnection(sessionId);
+    });
+    
     await cameraStatusRef.update({ 
       enabled: false,
       name: userName
@@ -267,11 +441,7 @@ async function toggleCamera() {
   }
   
   updateCameraButton();
-  
-  if (allCamerasRef) {
-    const snapshot = await allCamerasRef.once('value');
-    updateCameraDisplay(snapshot);
-  }
+  updateCameraDisplay();
 }
 
 function updateCameraButton() {
@@ -287,9 +457,11 @@ function updateCameraButton() {
   }
 }
 
-function updateCameraDisplay(snapshot) {
+async function updateCameraDisplay() {
   const videosContainer = document.getElementById('cameraVideos');
   if (!videosContainer) return;
+  
+  const snapshot = await allCamerasRef.once('value');
   
   videosContainer.innerHTML = '';
   
@@ -347,6 +519,10 @@ function toggleCameraPanel() {
   
   if (cameraBtn) {
     cameraBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
+  }
+  
+  if (!isVisible) {
+    updateCameraDisplay();
   }
 }
 
