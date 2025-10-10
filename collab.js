@@ -219,9 +219,9 @@ async function setupCameraForRoom(roomId) {
     const sessionId = snapshot.key;
     const data = snapshot.val();
     
-    if (sessionId !== userSessionId && data.enabled && cameraEnabled) {
-      // Create peer connection for this user
-      await createPeerConnection(sessionId, true);
+    // If another user has their camera enabled, create a connection to receive their stream
+    if (sessionId !== userSessionId && data.enabled) {
+      await createPeerConnection(sessionId, false);
     }
     
     updateCameraDisplay();
@@ -232,13 +232,13 @@ async function setupCameraForRoom(roomId) {
     const data = snapshot.val();
     
     if (sessionId !== userSessionId) {
-      if (data.enabled && cameraEnabled) {
-        // Other user enabled camera
+      if (data.enabled) {
+        // Other user enabled camera - create connection to receive their stream
         if (!peerConnections.has(sessionId)) {
-          await createPeerConnection(sessionId, true);
+          await createPeerConnection(sessionId, false);
         }
       } else {
-        // Other user disabled camera
+        // Other user disabled camera - close connection
         closePeerConnection(sessionId);
       }
     }
@@ -295,8 +295,8 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
   const peerConnection = new RTCPeerConnection(rtcConfiguration);
   peerConnections.set(remoteSessionId, peerConnection);
   
-  // Add local stream tracks to peer connection
-  if (localStream) {
+  // Add local stream tracks to peer connection ONLY if we have camera enabled
+  if (localStream && cameraEnabled) {
     localStream.getTracks().forEach(track => {
       peerConnection.addTrack(track, localStream);
     });
@@ -320,6 +320,15 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
     }
   };
   
+  // Handle connection state changes
+  peerConnection.onconnectionstatechange = () => {
+    if (peerConnection.connectionState === 'failed' || 
+        peerConnection.connectionState === 'disconnected' || 
+        peerConnection.connectionState === 'closed') {
+      console.log(`Connection ${peerConnection.connectionState} with ${remoteSessionId}`);
+    }
+  };
+  
   // Set up signaling listener
   const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
   const signalingRef = db.ref(incomingSignalingPath);
@@ -328,29 +337,36 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
   signalingRef.on('child_added', async snapshot => {
     const message = snapshot.val();
     
-    if (message.type === 'offer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      
-      db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
-        type: 'answer',
-        answer: peerConnection.localDescription.toJSON(),
-        from: userSessionId
-      });
-    } else if (message.type === 'answer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-    } else if (message.type === 'candidate') {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+    try {
+      if (message.type === 'offer') {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        
+        db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+          type: 'answer',
+          answer: peerConnection.localDescription.toJSON(),
+          from: userSessionId
+        });
+      } else if (message.type === 'answer') {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+      } else if (message.type === 'candidate') {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+      }
+    } catch (err) {
+      console.error('Error handling signaling message:', err);
     }
     
     // Clean up old signaling messages
     snapshot.ref.remove();
   });
   
-  // If initiator, create and send offer
-  if (isInitiator) {
-    const offer = await peerConnection.createOffer();
+  // Always create an offer to establish connection (we want to receive their stream)
+  try {
+    const offer = await peerConnection.createOffer({
+      offerToReceiveVideo: true,
+      offerToReceiveAudio: false
+    });
     await peerConnection.setLocalDescription(offer);
     
     db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
@@ -358,6 +374,8 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
       offer: peerConnection.localDescription.toJSON(),
       from: userSessionId
     });
+  } catch (err) {
+    console.error('Error creating offer:', err);
   }
   
   return peerConnection;
@@ -407,16 +425,28 @@ async function toggleCamera() {
         name: userName
       });
       
-      // Create peer connections with all other users who have cameras enabled
-      const snapshot = await allCamerasRef.once('value');
-      if (snapshot.exists()) {
-        const cameras = snapshot.val();
-        for (const [sessionId, data] of Object.entries(cameras)) {
-          if (sessionId !== userSessionId && data.enabled) {
-            await createPeerConnection(sessionId, false);
+      // Update existing peer connections to add our video stream
+      peerConnections.forEach((pc, remoteSessionId) => {
+        localStream.getTracks().forEach(track => {
+          const sender = pc.getSenders().find(s => s.track && s.track.kind === track.kind);
+          if (sender) {
+            sender.replaceTrack(track);
+          } else {
+            pc.addTrack(track, localStream);
           }
-        }
-      }
+        });
+        
+        // Renegotiate the connection
+        pc.createOffer().then(offer => {
+          return pc.setLocalDescription(offer);
+        }).then(() => {
+          db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+            type: 'offer',
+            offer: pc.localDescription.toJSON(),
+            from: userSessionId
+          });
+        });
+      });
       
     } catch (err) {
       console.error('Error accessing camera:', err);
@@ -429,9 +459,13 @@ async function toggleCamera() {
       localStream = null;
     }
     
-    // Close all peer connections
-    peerConnections.forEach((pc, sessionId) => {
-      closePeerConnection(sessionId);
+    // Remove tracks from existing peer connections but keep connections alive
+    peerConnections.forEach((pc, remoteSessionId) => {
+      pc.getSenders().forEach(sender => {
+        if (sender.track) {
+          pc.removeTrack(sender);
+        }
+      });
     });
     
     await cameraStatusRef.update({ 
