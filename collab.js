@@ -1,971 +1,4 @@
-// ==================== Firebase Config ====================
-const firebaseConfig = {
-  apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
-  authDomain: "cooperscodeart.firebaseapp.com",
-  projectId: "cooperscodeart",
-  storageBucket: "cooperscodeart.firebasestorage.app",
-  messagingSenderId: "632469567217",
-  appId: "1:632469567217:web:14278c59ad762e67eedb50",
-  measurementId: "G-NXS0EPJR61"
-};
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
-
-// ==================== Storage Helper ====================
-function setStorage(key, value) {
-  try {
-    localStorage.setItem(key, value);
-    return true;
-  } catch (e) {
-    console.warn('localStorage not available, data will not persist');
-    return false;
-  }
-}
-
-function getStorage(key) {
-  try {
-    return localStorage.getItem(key);
-  } catch (e) {
-    return null;
-  }
-}
-
-// ==================== User Management ====================
-let userName = null;
-let userSessionId = null;
-let presenceRef = null;
-let usersRef = null;
-
-function generateSessionId() {
-  return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
-
-function getUserName() {
-  if (userName) return userName;
-  
-  const savedName = getStorage('userName');
-  if (savedName) {
-    userName = savedName;
-    return userName;
-  }
-  
-  userName = 'Anonymous';
-  setStorage('userName', userName);
-  return userName;
-}
-
-function changeUserName() {
-  const newName = prompt('Enter your name:', userName || 'Anonymous');
-  if (newName && newName.trim()) {
-    userName = newName.trim();
-    setStorage('userName', userName);
-    
-    if (presenceRef && currentRoomId !== 'public') {
-      presenceRef.update({ name: userName });
-    }
-  }
-}
-
-function setupPresence(roomId) {
-  if (!roomId || roomId === 'public') return;
-  
-  if (presenceRef) {
-    presenceRef.remove();
-    presenceRef = null;
-  }
-  
-  if (usersRef) {
-    usersRef.off();
-    usersRef = null;
-  }
-  
-  userSessionId = generateSessionId();
-  
-  presenceRef = db.ref(`rooms/${roomId}/users/${userSessionId}`);
-  usersRef = db.ref(`rooms/${roomId}/users`);
-  
-  presenceRef.set({
-    name: userName,
-    timestamp: firebase.database.ServerValue.TIMESTAMP
-  });
-  
-  presenceRef.onDisconnect().remove();
-  
-  usersRef.on('value', snapshot => {
-    updateActiveUsers(snapshot);
-  });
-}
-
-function updateActiveUsers(snapshot) {
-  const usersContainer = document.getElementById('activeUsersList');
-  const userCount = document.getElementById('activeUserCount');
-  
-  if (!snapshot.exists()) {
-    if (usersContainer) {
-      usersContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No users online</p>';
-    }
-    if (userCount) {
-      userCount.textContent = '0';
-    }
-    return;
-  }
-  
-  const users = snapshot.val();
-  const userList = Object.entries(users).map(([id, data]) => ({
-    id,
-    name: data.name || 'Anonymous',
-    timestamp: data.timestamp || 0
-  }));
-  
-  userList.sort((a, b) => a.timestamp - b.timestamp);
-  
-  if (usersContainer) {
-    usersContainer.innerHTML = '';
-    
-    userList.forEach(user => {
-      const userItem = document.createElement('div');
-      userItem.style.cssText = `
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px;
-        margin-bottom: 6px;
-        background: hsl(217, 20%, 20%);
-        border: 1px solid hsl(217, 20%, 25%);
-        border-radius: 6px;
-      `;
-      
-      const statusDot = document.createElement('div');
-      statusDot.style.cssText = `
-        width: 8px;
-        height: 8px;
-        background: hsl(142, 76%, 55%);
-        border-radius: 50%;
-        flex-shrink: 0;
-      `;
-      
-      const nameText = document.createElement('div');
-      nameText.textContent = user.name;
-      nameText.style.cssText = `
-        color: hsl(217, 10%, 92%);
-        font-size: 14px;
-        font-weight: 500;
-      `;
-      
-      if (user.id === userSessionId) {
-        nameText.textContent += ' (you)';
-        nameText.style.color = 'hsl(220, 90%, 56%)';
-      }
-      
-      userItem.appendChild(statusDot);
-      userItem.appendChild(nameText);
-      usersContainer.appendChild(userItem);
-    });
-  }
-  
-  if (userCount) {
-    userCount.textContent = userList.length.toString();
-  }
-}
-
-// ==================== Chat System ====================
-let chatMessagesRef = null;
-let chatCache = [];
-
-// ==================== Camera System ====================
-let localStream = null;
-let cameraEnabled = false;
-let cameraStatusRef = null;
-let allCamerasRef = null;
-let peerConnections = new Map();
-let signalingRefs = new Map();
-
-// WebRTC Configuration with public STUN servers
-const rtcConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
-  ]
-};
-
-async function setupCameraForRoom(roomId) {
-  if (roomId === 'public') {
-    const cameraContainer = document.getElementById('cameraContainer');
-    if (cameraContainer) cameraContainer.style.display = 'none';
-    
-    cleanupCamera();
-    return;
-  }
-  
-  const cameraContainer = document.getElementById('cameraContainer');
-  if (cameraContainer) cameraContainer.style.display = 'flex';
-  
-  cleanupCamera();
-  
-  cameraStatusRef = db.ref(`rooms/${roomId}/cameraStatus/${userSessionId}`);
-  allCamerasRef = db.ref(`rooms/${roomId}/cameraStatus`);
-  
-  cameraStatusRef.set({
-    name: userName,
-    enabled: false,
-    timestamp: firebase.database.ServerValue.TIMESTAMP
-  });
-  
-  cameraStatusRef.onDisconnect().remove();
-  
-  // Listen for other users' camera status
-  allCamerasRef.on('child_added', async snapshot => {
-    const sessionId = snapshot.key;
-    const data = snapshot.val();
-    
-    if (sessionId !== userSessionId && data.enabled && cameraEnabled) {
-      // Create peer connection for this user
-      await createPeerConnection(sessionId, true);
-    }
-    
-    updateCameraDisplay();
-  });
-  
-  allCamerasRef.on('child_changed', async snapshot => {
-    const sessionId = snapshot.key;
-    const data = snapshot.val();
-    
-    if (sessionId !== userSessionId) {
-      if (data.enabled && cameraEnabled) {
-        // Other user enabled camera
-        if (!peerConnections.has(sessionId)) {
-          await createPeerConnection(sessionId, true);
-        }
-      } else {
-        // Other user disabled camera
-        closePeerConnection(sessionId);
-      }
-    }
-    
-    updateCameraDisplay();
-  });
-  
-  allCamerasRef.on('child_removed', snapshot => {
-    const sessionId = snapshot.key;
-    closePeerConnection(sessionId);
-    updateCameraDisplay();
-  });
-}
-
-function cleanupCamera() {
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-    localStream = null;
-  }
-  
-  if (cameraStatusRef) {
-    cameraStatusRef.off();
-    cameraStatusRef = null;
-  }
-  
-  if (allCamerasRef) {
-    allCamerasRef.off();
-    allCamerasRef = null;
-  }
-  
-  // Close all peer connections
-  peerConnections.forEach((pc, sessionId) => {
-    closePeerConnection(sessionId);
-  });
-  peerConnections.clear();
-  
-  // Clean up signaling listeners
-  signalingRefs.forEach((ref, sessionId) => {
-    ref.off();
-    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).remove();
-    db.ref(`rooms/${currentRoomId}/signaling/${sessionId}_${userSessionId}`).remove();
-  });
-  signalingRefs.clear();
-  
-  cameraEnabled = false;
-  updateCameraButton();
-}
-
-async function createPeerConnection(remoteSessionId, isInitiator) {
-  if (peerConnections.has(remoteSessionId)) {
-    return peerConnections.get(remoteSessionId);
-  }
-  
-  const peerConnection = new RTCPeerConnection(rtcConfiguration);
-  peerConnections.set(remoteSessionId, peerConnection);
-  
-  // Add local stream tracks to peer connection
-  if (localStream) {
-    localStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStream);
-    });
-  }
-  
-  // Handle incoming remote stream
-  peerConnection.ontrack = (event) => {
-    const remoteStream = event.streams[0];
-    displayRemoteVideo(remoteSessionId, remoteStream);
-  };
-  
-  // Handle ICE candidates
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      const signalingPath = `rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`;
-      db.ref(signalingPath).push({
-        type: 'candidate',
-        candidate: event.candidate.toJSON(),
-        from: userSessionId
-      });
-    }
-  };
-  
-  // Set up signaling listener
-  const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
-  const signalingRef = db.ref(incomingSignalingPath);
-  signalingRefs.set(remoteSessionId, signalingRef);
-  
-  signalingRef.on('child_added', async snapshot => {
-    const message = snapshot.val();
-    
-    if (message.type === 'offer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      
-      db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
-        type: 'answer',
-        answer: peerConnection.localDescription.toJSON(),
-        from: userSessionId
-      });
-    } else if (message.type === 'answer') {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-    } else if (message.type === 'candidate') {
-      await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-    }
-    
-    // Clean up old signaling messages
-    snapshot.ref.remove();
-  });
-  
-  // If initiator, create and send offer
-  if (isInitiator) {
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    
-    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
-      type: 'offer',
-      offer: peerConnection.localDescription.toJSON(),
-      from: userSessionId
-    });
-  }
-  
-  return peerConnection;
-}
-
-function closePeerConnection(remoteSessionId) {
-  const pc = peerConnections.get(remoteSessionId);
-  if (pc) {
-    pc.close();
-    peerConnections.delete(remoteSessionId);
-  }
-  
-  const signalingRef = signalingRefs.get(remoteSessionId);
-  if (signalingRef) {
-    signalingRef.off();
-    signalingRefs.delete(remoteSessionId);
-  }
-  
-  // Clean up signaling paths
-  if (currentRoomId) {
-    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
-    db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
-  }
-}
-
-function displayRemoteVideo(remoteSessionId, remoteStream) {
-  const videoElement = document.getElementById(`video-${remoteSessionId}`);
-  if (videoElement) {
-    videoElement.srcObject = remoteStream;
-  }
-}
-
-async function toggleCamera() {
-  if (!currentRoomId || currentRoomId === 'public') return;
-  
-  cameraEnabled = !cameraEnabled;
-  
-  if (cameraEnabled) {
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({ 
-        video: { width: 640, height: 480 }, 
-        audio: false 
-      });
-      
-      await cameraStatusRef.update({ 
-        enabled: true,
-        name: userName
-      });
-      
-      // Create peer connections with all other users who have cameras enabled
-      const snapshot = await allCamerasRef.once('value');
-      if (snapshot.exists()) {
-        const cameras = snapshot.val();
-        for (const [sessionId, data] of Object.entries(cameras)) {
-          if (sessionId !== userSessionId && data.enabled) {
-            await createPeerConnection(sessionId, false);
-          }
-        }
-      }
-      
-    } catch (err) {
-      console.error('Error accessing camera:', err);
-      alert('Could not access camera. Please check permissions.');
-      cameraEnabled = false;
-    }
-  } else {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      localStream = null;
-    }
-    
-    // Close all peer connections
-    peerConnections.forEach((pc, sessionId) => {
-      closePeerConnection(sessionId);
-    });
-    
-    await cameraStatusRef.update({ 
-      enabled: false,
-      name: userName
-    });
-  }
-  
-  updateCameraButton();
-  updateCameraDisplay();
-}
-
-function updateCameraButton() {
-  const btn = document.getElementById('toggleCameraBtn');
-  if (!btn) return;
-  
-  if (cameraEnabled) {
-    btn.textContent = 'Disable Camera';
-    btn.classList.add('disabled');
-  } else {
-    btn.textContent = 'Enable Camera';
-    btn.classList.remove('disabled');
-  }
-}
-
-async function updateCameraDisplay() {
-  const videosContainer = document.getElementById('cameraVideos');
-  if (!videosContainer) return;
-  
-  const snapshot = await allCamerasRef.once('value');
-  
-  videosContainer.innerHTML = '';
-  
-  if (!snapshot.exists()) {
-    videosContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px; text-align: center;">No cameras active</p>';
-    return;
-  }
-  
-  const cameras = snapshot.val();
-  
-  Object.entries(cameras).forEach(([sessionId, data]) => {
-    const videoItem = document.createElement('div');
-    videoItem.className = 'camera-video-item';
-    
-    const isCurrentUser = sessionId === userSessionId;
-    const displayName = isCurrentUser ? `${data.name} (You)` : data.name;
-    
-    if (data.enabled) {
-      const video = document.createElement('video');
-      video.autoplay = true;
-      video.playsInline = true;
-      video.muted = isCurrentUser;
-      video.id = `video-${sessionId}`;
-      
-      if (isCurrentUser && localStream) {
-        video.srcObject = localStream;
-      }
-      
-      videoItem.appendChild(video);
-      
-      const label = document.createElement('div');
-      label.className = 'camera-video-label';
-      label.textContent = displayName;
-      videoItem.appendChild(label);
-    } else {
-      videoItem.classList.add('disabled');
-      const nameDisplay = document.createElement('div');
-      nameDisplay.className = 'user-name-display';
-      nameDisplay.textContent = displayName;
-      videoItem.appendChild(nameDisplay);
-    }
-    
-    videosContainer.appendChild(videoItem);
-  });
-}
-
-function toggleCameraPanel() {
-  const cameraPanel = document.getElementById('cameraPanel');
-  const cameraBtn = document.getElementById('cameraMenuBtn');
-  
-  if (!cameraPanel) return;
-  
-  const isVisible = cameraPanel.style.display === 'flex';
-  cameraPanel.style.display = isVisible ? 'none' : 'flex';
-  
-  if (cameraBtn) {
-    cameraBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
-  }
-  
-  if (!isVisible) {
-    updateCameraDisplay();
-  }
-}
-
-function setupChatForRoom(roomId) {
-  if (roomId === 'public') {
-    const chatContainer = document.getElementById('chatContainer');
-    if (chatContainer) chatContainer.style.display = 'none';
-    
-    if (chatMessagesRef) {
-      chatMessagesRef.off();
-      chatMessagesRef = null;
-    }
-    chatCache = [];
-    return;
-  }
-  
-  const chatContainer = document.getElementById('chatContainer');
-  if (chatContainer) chatContainer.style.display = 'flex';
-  
-  if (chatMessagesRef) {
-    chatMessagesRef.off();
-  }
-  
-  chatMessagesRef = db.ref(`rooms/${roomId}/chat`);
-  chatCache = [];
-  
-  const messagesContainer = document.getElementById('chatMessages');
-  if (messagesContainer) messagesContainer.innerHTML = '';
-  
-  chatMessagesRef.on('child_added', snapshot => {
-    const msg = snapshot.val();
-    displayChatMessage(msg);
-    chatCache.push(msg);
-  });
-}
-
-function displayChatMessage(msg) {
-  const messagesContainer = document.getElementById('chatMessages');
-  if (!messagesContainer) return;
-  
-  const messageDiv = document.createElement('div');
-  messageDiv.className = 'chat-message';
-  
-  const isCurrentUser = msg.name === userName;
-  
-  messageDiv.style.cssText = `
-    margin: 8px 0;
-    padding: 10px 14px;
-    border-radius: 12px;
-    max-width: 75%;
-    font-size: 14px;
-    line-height: 1.4;
-    word-wrap: break-word;
-    ${isCurrentUser ? 'align-self: flex-end; background-color: hsl(220, 90%, 56%); color: white; border-bottom-right-radius: 4px;' : 'align-self: flex-start; background-color: hsl(217, 20%, 20%); color: hsl(217, 10%, 92%); border-bottom-left-radius: 4px;'}
-  `;
-  
-  const nameSpan = document.createElement('div');
-  nameSpan.style.cssText = `
-    font-weight: 600;
-    font-size: 12px;
-    margin-bottom: 4px;
-    ${isCurrentUser ? 'color: hsla(220, 90%, 98%, 0.9);' : 'color: hsl(220, 90%, 56%);'}
-  `;
-  nameSpan.textContent = isCurrentUser ? 'You' : msg.name;
-  
-  const textSpan = document.createElement('div');
-  textSpan.textContent = msg.text;
-  
-  messageDiv.appendChild(nameSpan);
-  messageDiv.appendChild(textSpan);
-  messagesContainer.appendChild(messageDiv);
-  
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-function sendChatMessage() {
-  const input = document.getElementById('chatInput');
-  if (!input || !currentRoomId || currentRoomId === 'public') return;
-  
-  const text = input.value.trim();
-  if (!text) return;
-  
-  chatMessagesRef.push({
-    name: userName,
-    text: text,
-    timestamp: Date.now()
-  });
-  
-  input.value = '';
-}
-
-function toggleChatPanel() {
-  const chatPanel = document.getElementById('chatPanel');
-  const chatBtn = document.getElementById('chatMenuBtn');
-  
-  if (!chatPanel) return;
-  
-  const isVisible = chatPanel.style.display === 'flex';
-  chatPanel.style.display = isVisible ? 'none' : 'flex';
-  
-  if (chatBtn) {
-    chatBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
-  }
-  
-  if (!isVisible) {
-    const messagesContainer = document.getElementById('chatMessages');
-    if (messagesContainer) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-  }
-}
-
-// ==================== Room History Management ====================
-function saveRoomToHistory(roomId) {
-  if (roomId === 'public') return;
-  
-  try {
-    const savedHistory = getStorage('roomHistory');
-    let history = savedHistory ? JSON.parse(savedHistory) : [];
-    
-    history = history.filter(item => item.roomId !== roomId);
-    
-    history.unshift({
-      roomId: roomId,
-      timestamp: Date.now()
-    });
-    
-    history = history.slice(0, 10);
-    
-    setStorage('roomHistory', JSON.stringify(history));
-  } catch (err) {
-    console.error('Error saving room to history:', err);
-  }
-}
-
-function removeRoomFromHistory(roomId) {
-  try {
-    const savedHistory = getStorage('roomHistory');
-    let history = savedHistory ? JSON.parse(savedHistory) : [];
-    history = history.filter(item => item.roomId !== roomId);
-    setStorage('roomHistory', JSON.stringify(history));
-  } catch (err) {
-    console.error('Error removing room from history:', err);
-  }
-}
-
-async function loadRoomHistory() {
-  const historyContainer = document.getElementById('roomHistoryList');
-  if (!historyContainer) return;
-  
-  try {
-    const savedHistory = getStorage('roomHistory');
-    const history = savedHistory ? JSON.parse(savedHistory) : [];
-    
-    if (history.length === 0) {
-      historyContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No recent rooms</p>';
-      return;
-    }
-    
-    historyContainer.innerHTML = '';
-    
-    for (const item of history) {
-      const roomId = item.roomId;
-      
-      const roomSnapshot = await db.ref(`rooms/${roomId}`).once('value');
-      const roomData = roomSnapshot.val();
-      const isDeleted = !roomData || roomData.deleted === true;
-      
-      const roomItem = document.createElement('div');
-      roomItem.style.cssText = `
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px;
-        margin-bottom: 8px;
-        background: hsl(217, 20%, 20%);
-        border: 1px solid hsl(217, 20%, 25%);
-        border-radius: 8px;
-        ${isDeleted ? 'opacity: 0.5;' : ''}
-      `;
-      
-      const roomInfo = document.createElement('div');
-      roomInfo.style.cssText = 'flex: 1;';
-      
-      const roomIdText = document.createElement('div');
-      roomIdText.textContent = roomId;
-      roomIdText.style.cssText = `
-        color: ${isDeleted ? 'hsl(0, 60%, 50%)' : 'hsl(220, 90%, 56%)'};
-        font-weight: 600;
-        font-family: 'JetBrains Mono', monospace;
-        font-size: 14px;
-        margin-bottom: 4px;
-      `;
-      
-      const statusText = document.createElement('div');
-      statusText.style.cssText = 'color: hsl(217, 10%, 70%); font-size: 12px;';
-      
-      if (isDeleted) {
-        statusText.textContent = '🔒 Room Deleted';
-      } else {
-        const timeAgo = getTimeAgo(item.timestamp);
-        statusText.textContent = `Last visited ${timeAgo}`;
-      }
-      
-      roomInfo.appendChild(roomIdText);
-      roomInfo.appendChild(statusText);
-      
-      const btnContainer = document.createElement('div');
-      btnContainer.style.cssText = 'display: flex; gap: 6px;';
-      
-      if (isDeleted) {
-        const removeBtn = document.createElement('button');
-        removeBtn.textContent = 'Remove';
-        removeBtn.style.cssText = `
-          padding: 6px 14px;
-          background: hsl(0, 84%, 48%);
-          color: white;
-          border: none;
-          border-radius: 6px;
-          cursor: pointer;
-          font-size: 13px;
-          font-weight: 500;
-        `;
-        removeBtn.onclick = () => {
-          removeRoomFromHistory(roomId);
-          loadRoomHistory();
-        };
-        btnContainer.appendChild(removeBtn);
-      } else {
-        const joinBtn = document.createElement('button');
-        joinBtn.textContent = 'Join';
-        joinBtn.style.cssText = `
-          padding: 6px 14px;
-          background: hsl(220, 90%, 56%);
-          color: white;
-          border: none;
-          border-radius: 6px;
-          cursor: pointer;
-          font-size: 13px;
-          font-weight: 500;
-        `;
-        joinBtn.onclick = () => {
-          joinRoom(roomId);
-          roomDropdown.classList.remove('show');
-        };
-        btnContainer.appendChild(joinBtn);
-      }
-      
-      roomItem.appendChild(roomInfo);
-      roomItem.appendChild(btnContainer);
-      historyContainer.appendChild(roomItem);
-    }
-    
-  } catch (err) {
-    console.error('Error loading room history:', err);
-    historyContainer.innerHTML = '<p style="color: hsl(0, 60%, 50%); font-size: 13px; padding: 8px;">Error loading history</p>';
-  }
-}
-
-function getTimeAgo(timestamp) {
-  const seconds = Math.floor((Date.now() - timestamp) / 1000);
-  
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
-  return `${Math.floor(seconds / 604800)}w ago`;
-}
-
-// ==================== Room Management ====================
-let currentRoomId = null;
-let currentPageId = 'page1';
-let linesRef = null;
-let textsRef = null;
-let roomDeletedRef = null;
-let roomClearedRef = null;
-let isJoiningRoom = false;
-
-function generateRoomCode() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let code = '';
-  for (let i = 0; i < 6; i++) {
-    code += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return code;
-}
-
-async function joinRoom(roomId, password = null) {
-  if (roomId !== 'public') {
-    const roomRef = db.ref(`rooms/${roomId}`);
-    const roomSnapshot = await roomRef.once('value');
-    
-    const roomData = roomSnapshot.val();
-    
-    if (!roomData || roomData.deleted === true) {
-      alert('Room does not exist');
-      joinRoom('public');
-      return;
-    }
-    
-    const hasLines = roomData && roomData.lines;
-    const hasTexts = roomData && roomData.texts;
-    const hasPassword = roomData && roomData.password;
-    
-    const roomExists = hasPassword || hasLines || hasTexts;
-    
-    if (!roomExists && roomData === null) {
-      alert('Room does not exist');
-      joinRoom('public');
-      return;
-    }
-    
-    const passwordRef = db.ref(`rooms/${roomId}/password`);
-    const passwordSnapshot = await passwordRef.once('value');
-    const storedPassword = passwordSnapshot.val();
-
-    if (storedPassword) {
-      if (password === null) {
-        const inputPassword = prompt('This room is password protected. Enter the passkey:');
-        if (!inputPassword) {
-          joinRoom('public');
-          return;
-        }
-        password = inputPassword;
-      }
-
-      if (password !== storedPassword) {
-        alert('Incorrect Passkey');
-        joinRoom('public');
-        return;
-      }
-    }
-  }
-
-  if (linesRef) linesRef.off();
-  if (textsRef) textsRef.off();
-  if (roomDeletedRef) roomDeletedRef.off();
-  if (roomClearedRef) roomClearedRef.off();
-
-  currentRoomId = roomId;
-  currentPageId = 'page1';
-  linesRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/lines`);
-  textsRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/texts`);
-
-  isJoiningRoom = true;
-  linesCache.length = 0;
-  textsCache.clear();
-  drawAll();
-
-  setupFirebaseListeners();
-  setupRoomDeletionListener();
-  setupRoomClearedListener();
-  updateRoomIndicator();
-  updatePageIndicator();
-  
-  setupPresence(roomId);
-  setupChatForRoom(roomId);
-  setupCameraForRoom(roomId);
-
-  window.location.hash = roomId;
-  
-  saveRoomToHistory(roomId);
-  
-  setTimeout(() => { isJoiningRoom = false; }, 1000);
-}
-
-function setupRoomDeletionListener() {
-  if (currentRoomId === 'public') return;
-  
-  roomDeletedRef = db.ref(`rooms/${currentRoomId}/deleted`);
-  roomDeletedRef.on('value', snapshot => {
-    if (snapshot.val() === true) {
-      alert('Sorry, this room has been deleted by the owner.');
-      joinRoom('public');
-    }
-  });
-}
-
-function setupRoomClearedListener() {
-  roomClearedRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`);
-  roomClearedRef.on('value', snapshot => {
-    if (!isJoiningRoom && snapshot.exists()) {
-      linesCache.length = 0;
-      textsCache.clear();
-      drawAll();
-    }
-  });
-}
-
-async function updatePageIndicator() {
-  const indicator = document.getElementById('pageIndicator');
-  if (indicator && currentRoomId) {
-    try {
-      const pageSnapshot = await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/name`).once('value');
-      const customName = pageSnapshot.val();
-      
-      if (customName) {
-        indicator.textContent = customName;
-      } else {
-        const pageNum = currentPageId.replace('page', '');
-        indicator.textContent = `Page ${pageNum}`;
-      }
-    } catch (err) {
-      const pageNum = currentPageId.replace('page', '');
-      indicator.textContent = `Page ${pageNum}`;
-    }
-  }
-}
-
-async function switchPage(pageId) {
-  if (pageId === currentPageId) return;
-  
-  if (linesRef) linesRef.off();
-  if (textsRef) textsRef.off();
-  if (roomClearedRef) roomClearedRef.off();
-  
-  currentPageId = pageId;
-  linesRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`);
-  textsRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`);
-  
-  isJoiningRoom = true;
-  linesCache.length = 0;
-  textsCache.clear();
-  drawAll();
-  
-  setupFirebaseListeners();
-  setupRoomClearedListener();
-  updatePageIndicator();
-  
-  setTimeout(() => { isJoiningRoom = false; }, 1000);
-}
-
-function updateRoomIndicator() {
-  const indicator = document.getElementById('roomIndicator');
-  const menuBtn = document.getElementById('roomMenuBtn');
-  const roomCodeDisplay = document.getElementById('roomCodeDisplay');
-  const deleteBtn = document.getElementById('deleteRoomBtn');
-  const copyBtn = document.getElementById('copyRoomBtn');
-  const pageMenuBtn = document.getElementById('pageMenuBtn');
-  const activeUsersSection = document.getElementById('activeUsersSection');
-  const activeUsersDivider = document.getElementById('activeUsersDivider');
-
-  if (indicator && currentRoomId) {
+if (indicator && currentRoomId) {
     if (currentRoomId === 'public') {
       indicator.textContent = 'Public Canvas';
       menuBtn?.classList.add('public');
@@ -1146,12 +179,10 @@ function getColorAtPoint(x, y) {
   const b = pixelData[2];
   const a = pixelData[3];
   
-  // If fully transparent, return white
   if (a === 0) {
     return '#ffffff';
   }
   
-  // Convert RGB to hex
   return '#' + [r, g, b].map(x => {
     const hex = x.toString(16);
     return hex.length === 1 ? '0' + hex : hex;
@@ -1196,7 +227,6 @@ function scheduleDragUpdate() {
 }
 
 function handlePointerDown(x, y) {
-  // Handle eyedropper mode
   if (eyedropperActive) {
     const pickedColor = getColorAtPoint(x, y);
     brushColor = pickedColor;
@@ -1204,7 +234,6 @@ function handlePointerDown(x, y) {
     eyedropperActive = false;
     canvas.classList.remove('eyedropper-mode');
     
-    // Update eyedropper button state
     const eyedropperBtn = document.getElementById('eyedropperBtn');
     if (eyedropperBtn) {
       eyedropperBtn.style.backgroundColor = '';
@@ -1223,7 +252,6 @@ function handlePointerDown(x, y) {
 }
 
 function drawMove(x, y) {
-  // Don't draw if eyedropper is active
   if (eyedropperActive) {
     return;
   }
@@ -1358,11 +386,9 @@ eyedropperBtn?.addEventListener('click', () => {
   eyedropperActive = !eyedropperActive;
   
   if (eyedropperActive) {
-    // Disable eraser if active
     eraserActive = false;
     eraserBtn.style.backgroundColor = '';
     
-    // Update button state
     eyedropperBtn.style.backgroundColor = 'hsl(220, 90%, 56%)';
     canvas.classList.add('eyedropper-mode');
   } else {
@@ -1384,7 +410,6 @@ eraserBtn.addEventListener('click', () => {
   eraserActive = !eraserActive;
   eraserBtn.style.backgroundColor = eraserActive ? 'orange' : '';
   
-  // Disable eyedropper if active
   if (eraserActive && eyedropperActive) {
     eyedropperActive = false;
     canvas.classList.remove('eyedropper-mode');
@@ -2046,6 +1071,7 @@ window.addEventListener('load', () => {
   const cameraMenuBtn = document.getElementById('cameraMenuBtn');
   const closeCameraBtn = document.getElementById('closeCameraBtn');
   const toggleCameraBtn = document.getElementById('toggleCameraBtn');
+  const toggleMicBtn = document.getElementById('toggleMicBtn');
 
   if (cameraMenuBtn) {
     cameraMenuBtn.addEventListener('click', toggleCameraPanel);
@@ -2058,6 +1084,10 @@ window.addEventListener('load', () => {
   if (toggleCameraBtn) {
     toggleCameraBtn.addEventListener('click', toggleCamera);
   }
+
+  if (toggleMicBtn) {
+    toggleMicBtn.addEventListener('click', toggleMicrophone);
+  }
   
   const hashRoom = window.location.hash.substring(1);
   if (hashRoom) {
@@ -2066,3 +1096,1152 @@ window.addEventListener('load', () => {
     joinRoom('public');
   }
 });
+// ==================== Firebase Config ====================
+const firebaseConfig = {
+  apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
+  authDomain: "cooperscodeart.firebaseapp.com",
+  projectId: "cooperscodeart",
+  storageBucket: "cooperscodeart.firebasestorage.app",
+  messagingSenderId: "632469567217",
+  appId: "1:632469567217:web:14278c59ad762e67eedb50",
+  measurementId: "G-NXS0EPJR61"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ==================== Storage Helper ====================
+function setStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn('localStorage not available, data will not persist');
+    return false;
+  }
+}
+
+function getStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+// ==================== User Management ====================
+let userName = null;
+let userSessionId = null;
+let presenceRef = null;
+let usersRef = null;
+
+function generateSessionId() {
+  return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function getUserName() {
+  if (userName) return userName;
+  
+  const savedName = getStorage('userName');
+  if (savedName) {
+    userName = savedName;
+    return userName;
+  }
+  
+  userName = 'Anonymous';
+  setStorage('userName', userName);
+  return userName;
+}
+
+function changeUserName() {
+  const newName = prompt('Enter your name:', userName || 'Anonymous');
+  if (newName && newName.trim()) {
+    userName = newName.trim();
+    setStorage('userName', userName);
+    
+    if (presenceRef && currentRoomId !== 'public') {
+      presenceRef.update({ name: userName });
+    }
+  }
+}
+
+function setupPresence(roomId) {
+  if (!roomId || roomId === 'public') return;
+  
+  if (presenceRef) {
+    presenceRef.remove();
+    presenceRef = null;
+  }
+  
+  if (usersRef) {
+    usersRef.off();
+    usersRef = null;
+  }
+  
+  userSessionId = generateSessionId();
+  
+  presenceRef = db.ref(`rooms/${roomId}/users/${userSessionId}`);
+  usersRef = db.ref(`rooms/${roomId}/users`);
+  
+  presenceRef.set({
+    name: userName,
+    timestamp: firebase.database.ServerValue.TIMESTAMP
+  });
+  
+  presenceRef.onDisconnect().remove();
+  
+  usersRef.on('value', snapshot => {
+    updateActiveUsers(snapshot);
+  });
+}
+
+function updateActiveUsers(snapshot) {
+  const usersContainer = document.getElementById('activeUsersList');
+  const userCount = document.getElementById('activeUserCount');
+  
+  if (!snapshot.exists()) {
+    if (usersContainer) {
+      usersContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No users online</p>';
+    }
+    if (userCount) {
+      userCount.textContent = '0';
+    }
+    return;
+  }
+  
+  const users = snapshot.val();
+  const userList = Object.entries(users).map(([id, data]) => ({
+    id,
+    name: data.name || 'Anonymous',
+    timestamp: data.timestamp || 0
+  }));
+  
+  userList.sort((a, b) => a.timestamp - b.timestamp);
+  
+  if (usersContainer) {
+    usersContainer.innerHTML = '';
+    
+    userList.forEach(user => {
+      const userItem = document.createElement('div');
+      userItem.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        margin-bottom: 6px;
+        background: hsl(217, 20%, 20%);
+        border: 1px solid hsl(217, 20%, 25%);
+        border-radius: 6px;
+      `;
+      
+      const statusDot = document.createElement('div');
+      statusDot.style.cssText = `
+        width: 8px;
+        height: 8px;
+        background: hsl(142, 76%, 55%);
+        border-radius: 50%;
+        flex-shrink: 0;
+      `;
+      
+      const nameText = document.createElement('div');
+      nameText.textContent = user.name;
+      nameText.style.cssText = `
+        color: hsl(217, 10%, 92%);
+        font-size: 14px;
+        font-weight: 500;
+      `;
+      
+      if (user.id === userSessionId) {
+        nameText.textContent += ' (you)';
+        nameText.style.color = 'hsl(220, 90%, 56%)';
+      }
+      
+      userItem.appendChild(statusDot);
+      userItem.appendChild(nameText);
+      usersContainer.appendChild(userItem);
+    });
+  }
+  
+  if (userCount) {
+    userCount.textContent = userList.length.toString();
+  }
+}
+
+// ==================== Chat System ====================
+let chatMessagesRef = null;
+let chatCache = [];
+
+function setupChatForRoom(roomId) {
+  if (roomId === 'public') {
+    const chatContainer = document.getElementById('chatContainer');
+    if (chatContainer) chatContainer.style.display = 'none';
+    
+    if (chatMessagesRef) {
+      chatMessagesRef.off();
+      chatMessagesRef = null;
+    }
+    chatCache = [];
+    return;
+  }
+  
+  const chatContainer = document.getElementById('chatContainer');
+  if (chatContainer) chatContainer.style.display = 'flex';
+  
+  if (chatMessagesRef) {
+    chatMessagesRef.off();
+  }
+  
+  chatMessagesRef = db.ref(`rooms/${roomId}/chat`);
+  chatCache = [];
+  
+  const messagesContainer = document.getElementById('chatMessages');
+  if (messagesContainer) messagesContainer.innerHTML = '';
+  
+  chatMessagesRef.on('child_added', snapshot => {
+    const msg = snapshot.val();
+    displayChatMessage(msg);
+    chatCache.push(msg);
+  });
+}
+
+function displayChatMessage(msg) {
+  const messagesContainer = document.getElementById('chatMessages');
+  if (!messagesContainer) return;
+  
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'chat-message';
+  
+  const isCurrentUser = msg.name === userName;
+  
+  messageDiv.style.cssText = `
+    margin: 8px 0;
+    padding: 10px 14px;
+    border-radius: 12px;
+    max-width: 75%;
+    font-size: 14px;
+    line-height: 1.4;
+    word-wrap: break-word;
+    ${isCurrentUser ? 'align-self: flex-end; background-color: hsl(220, 90%, 56%); color: white; border-bottom-right-radius: 4px;' : 'align-self: flex-start; background-color: hsl(217, 20%, 20%); color: hsl(217, 10%, 92%); border-bottom-left-radius: 4px;'}
+  `;
+  
+  const nameSpan = document.createElement('div');
+  nameSpan.style.cssText = `
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 4px;
+    ${isCurrentUser ? 'color: hsla(220, 90%, 98%, 0.9);' : 'color: hsl(220, 90%, 56%);'}
+  `;
+  nameSpan.textContent = isCurrentUser ? 'You' : msg.name;
+  
+  const textSpan = document.createElement('div');
+  textSpan.textContent = msg.text;
+  
+  messageDiv.appendChild(nameSpan);
+  messageDiv.appendChild(textSpan);
+  messagesContainer.appendChild(messageDiv);
+  
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function sendChatMessage() {
+  const input = document.getElementById('chatInput');
+  if (!input || !currentRoomId || currentRoomId === 'public') return;
+  
+  const text = input.value.trim();
+  if (!text) return;
+  
+  chatMessagesRef.push({
+    name: userName,
+    text: text,
+    timestamp: Date.now()
+  });
+  
+  input.value = '';
+}
+
+function toggleChatPanel() {
+  const chatPanel = document.getElementById('chatPanel');
+  const chatBtn = document.getElementById('chatMenuBtn');
+  
+  if (!chatPanel) return;
+  
+  const isVisible = chatPanel.style.display === 'flex';
+  chatPanel.style.display = isVisible ? 'none' : 'flex';
+  
+  if (chatBtn) {
+    chatBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
+  }
+  
+  if (!isVisible) {
+    const messagesContainer = document.getElementById('chatMessages');
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+}
+
+// ==================== Camera System ====================
+let localStream = null;
+let localAudioStream = null;
+let cameraEnabled = false;
+let micEnabled = false;
+let cameraStatusRef = null;
+let allCamerasRef = null;
+let peerConnections = new Map();
+let signalingRefs = new Map();
+
+// WebRTC Configuration with public STUN servers
+const rtcConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ]
+};
+
+async function setupCameraForRoom(roomId) {
+  if (roomId === 'public') {
+    const cameraContainer = document.getElementById('cameraContainer');
+    if (cameraContainer) cameraContainer.style.display = 'none';
+    cleanupCamera();
+    return;
+  }
+  
+  const cameraContainer = document.getElementById('cameraContainer');
+  if (cameraContainer) cameraContainer.style.display = 'flex';
+  
+  cleanupCamera();
+  
+  cameraStatusRef = db.ref(`rooms/${roomId}/cameraStatus/${userSessionId}`);
+  allCamerasRef = db.ref(`rooms/${roomId}/cameraStatus`);
+  
+  cameraStatusRef.set({
+    name: userName,
+    enabled: false,
+    micEnabled: false,
+    timestamp: firebase.database.ServerValue.TIMESTAMP
+  });
+  
+  cameraStatusRef.onDisconnect().remove();
+  
+  // Listen for other users' camera status
+  allCamerasRef.on('child_added', async snapshot => {
+    const sessionId = snapshot.key;
+    const data = snapshot.val();
+    
+    if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && (cameraEnabled || micEnabled)) {
+      await createPeerConnection(sessionId, true);
+    }
+    
+    updateCameraDisplay();
+  });
+  
+  allCamerasRef.on('child_changed', async snapshot => {
+    const sessionId = snapshot.key;
+    const data = snapshot.val();
+    
+    if (sessionId !== userSessionId) {
+      if ((data.enabled || data.micEnabled) && (cameraEnabled || micEnabled)) {
+        if (!peerConnections.has(sessionId)) {
+          await createPeerConnection(sessionId, true);
+        }
+      } else if (!data.enabled && !data.micEnabled) {
+        closePeerConnection(sessionId);
+      }
+    }
+    
+    updateCameraDisplay();
+  });
+  
+  allCamerasRef.on('child_removed', snapshot => {
+    const sessionId = snapshot.key;
+    closePeerConnection(sessionId);
+    updateCameraDisplay();
+  });
+}
+
+function cleanupCamera() {
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+    localStream = null;
+  }
+  
+  if (localAudioStream) {
+    localAudioStream.getTracks().forEach(track => track.stop());
+    localAudioStream = null;
+  }
+  
+  if (cameraStatusRef) {
+    cameraStatusRef.off();
+    cameraStatusRef = null;
+  }
+  
+  if (allCamerasRef) {
+    allCamerasRef.off();
+    allCamerasRef = null;
+  }
+  
+  peerConnections.forEach((pc, sessionId) => {
+    closePeerConnection(sessionId);
+  });
+  peerConnections.clear();
+  
+  signalingRefs.forEach((ref, sessionId) => {
+    ref.off();
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).remove();
+    db.ref(`rooms/${currentRoomId}/signaling/${sessionId}_${userSessionId}`).remove();
+  });
+  signalingRefs.clear();
+  
+  cameraEnabled = false;
+  micEnabled = false;
+  updateCameraButton();
+  updateMicButton();
+}
+
+async function createPeerConnection(remoteSessionId, isInitiator) {
+  if (peerConnections.has(remoteSessionId)) {
+    return peerConnections.get(remoteSessionId);
+  }
+  
+  console.log(`Creating peer connection with ${remoteSessionId}`);
+  
+  const peerConnection = new RTCPeerConnection(rtcConfiguration);
+  peerConnections.set(remoteSessionId, peerConnection);
+  
+  // Add local video stream tracks to peer connection
+  if (localStream && cameraEnabled) {
+    localStream.getTracks().forEach(track => {
+      console.log(`Adding video track to connection with ${remoteSessionId}`);
+      peerConnection.addTrack(track, localStream);
+    });
+  }
+  
+  // Add local audio stream tracks to peer connection
+  if (localAudioStream && micEnabled) {
+    localAudioStream.getTracks().forEach(track => {
+      console.log(`Adding audio track to connection with ${remoteSessionId}`);
+      peerConnection.addTrack(track, localAudioStream);
+    });
+  }
+  
+  // Handle incoming remote stream
+  peerConnection.ontrack = (event) => {
+    console.log(`Received remote track from ${remoteSessionId}, kind: ${event.track.kind}`);
+    const remoteStream = event.streams[0];
+    displayRemoteVideo(remoteSessionId, remoteStream);
+  };
+  
+  // Handle ICE candidates
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      const signalingPath = `rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`;
+      db.ref(signalingPath).push({
+        type: 'candidate',
+        candidate: event.candidate.toJSON(),
+        from: userSessionId
+      });
+    }
+  };
+  
+  peerConnection.onconnectionstatechange = () => {
+    console.log(`Connection state with ${remoteSessionId}: ${peerConnection.connectionState}`);
+  };
+  
+  // Set up signaling listener
+  const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
+  const signalingRef = db.ref(incomingSignalingPath);
+  signalingRefs.set(remoteSessionId, signalingRef);
+  
+  signalingRef.on('child_added', async snapshot => {
+    const message = snapshot.val();
+    
+    try {
+      if (message.type === 'offer') {
+        console.log(`Received offer from ${remoteSessionId}`);
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        
+        db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+          type: 'answer',
+          answer: peerConnection.localDescription.toJSON(),
+          from: userSessionId
+        });
+        console.log(`Sent answer to ${remoteSessionId}`);
+      } else if (message.type === 'answer') {
+        console.log(`Received answer from ${remoteSessionId}`);
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+      } else if (message.type === 'candidate') {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+      }
+    } catch (err) {
+      console.error('Error handling signaling message:', err);
+    }
+    
+    snapshot.ref.remove();
+  });
+  
+  // If initiator, create and send offer
+  if (isInitiator) {
+    try {
+      const offer = await peerConnection.createOffer({
+        offerToReceiveVideo: true,
+        offerToReceiveAudio: true
+      });
+      await peerConnection.setLocalDescription(offer);
+      
+      console.log(`Sending offer to ${remoteSessionId}`);
+      db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+        type: 'offer',
+        offer: peerConnection.localDescription.toJSON(),
+        from: userSessionId
+      });
+    } catch (err) {
+      console.error('Error creating offer:', err);
+    }
+  }
+  
+  return peerConnection;
+}
+
+function closePeerConnection(remoteSessionId) {
+  const pc = peerConnections.get(remoteSessionId);
+  if (pc) {
+    pc.close();
+    peerConnections.delete(remoteSessionId);
+  }
+  
+  const signalingRef = signalingRefs.get(remoteSessionId);
+  if (signalingRef) {
+    signalingRef.off();
+    signalingRefs.delete(remoteSessionId);
+  }
+  
+  if (currentRoomId) {
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
+    db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
+  }
+}
+
+function displayRemoteVideo(remoteSessionId, remoteStream) {
+  const videoElement = document.getElementById(`video-${remoteSessionId}`);
+  if (videoElement) {
+    console.log(`Setting remote stream for ${remoteSessionId}`);
+    videoElement.srcObject = remoteStream;
+    videoElement.play().catch(e => console.error('Play error:', e));
+  }
+}
+
+async function toggleCamera() {
+  if (!currentRoomId || currentRoomId === 'public') return;
+  
+  cameraEnabled = !cameraEnabled;
+  
+  if (cameraEnabled) {
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 640, height: 480 }, 
+        audio: false 
+      });
+      
+      console.log('Camera enabled');
+      
+      await cameraStatusRef.update({ 
+        enabled: true,
+        name: userName
+      });
+      
+      // Add video tracks to existing peer connections
+      peerConnections.forEach((pc, remoteSessionId) => {
+        localStream.getTracks().forEach(track => {
+          console.log(`Adding video track to existing connection with ${remoteSessionId}`);
+          pc.addTrack(track, localStream);
+        });
+      });
+      
+      // Create peer connections with all other users who have cameras or mics enabled
+      const snapshot = await allCamerasRef.once('value');
+      if (snapshot.exists()) {
+        const cameras = snapshot.val();
+        for (const [sessionId, data] of Object.entries(cameras)) {
+          if (sessionId !== userSessionId && (data.enabled || data.micEnabled)) {
+            if (!peerConnections.has(sessionId)) {
+              await createPeerConnection(sessionId, false);
+            }
+          }
+        }
+      }
+      
+    } catch (err) {
+      console.error('Error accessing camera:', err);
+      alert('Could not access camera. Please check permissions.');
+      cameraEnabled = false;
+      await cameraStatusRef.update({ 
+        enabled: false,
+        name: userName
+      });
+    }
+  } else {
+    console.log('Camera disabled');
+    
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    
+    // Remove video tracks from peer connections
+    peerConnections.forEach((pc, remoteSessionId) => {
+      const senders = pc.getSenders();
+      senders.forEach(sender => {
+        if (sender.track && sender.track.kind === 'video') {
+          pc.removeTrack(sender);
+        }
+      });
+    });
+    
+    await cameraStatusRef.update({ 
+      enabled: false,
+      name: userName
+    });
+  }
+  
+  updateCameraButton();
+  updateCameraDisplay();
+}
+
+async function toggleMicrophone() {
+  if (!currentRoomId || currentRoomId === 'public') return;
+  
+  micEnabled = !micEnabled;
+  
+  if (micEnabled) {
+    try {
+      localAudioStream = await navigator.mediaDevices.getUserMedia({ 
+        video: false, 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      
+      console.log('Microphone enabled');
+      
+      await cameraStatusRef.update({ 
+        micEnabled: true,
+        name: userName
+      });
+      
+      // Add audio tracks to existing peer connections
+      peerConnections.forEach((pc, remoteSessionId) => {
+        localAudioStream.getTracks().forEach(track => {
+          console.log(`Adding audio track to existing connection with ${remoteSessionId}`);
+          pc.addTrack(track, localAudioStream);
+        });
+      });
+      
+      // Create peer connections with all other users who have cameras or mics enabled
+      const snapshot = await allCamerasRef.once('value');
+      if (snapshot.exists()) {
+        const cameras = snapshot.val();
+        for (const [sessionId, data] of Object.entries(cameras)) {
+          if (sessionId !== userSessionId && (data.enabled || data.micEnabled)) {
+            if (!peerConnections.has(sessionId)) {
+              await createPeerConnection(sessionId, false);
+            }
+          }
+        }
+      }
+      
+    } catch (err) {
+      console.error('Error accessing microphone:', err);
+      alert('Could not access microphone. Please check permissions.');
+      micEnabled = false;
+      await cameraStatusRef.update({ 
+        micEnabled: false,
+        name: userName
+      });
+    }
+  } else {
+    console.log('Microphone disabled');
+    
+    if (localAudioStream) {
+      localAudioStream.getTracks().forEach(track => track.stop());
+      localAudioStream = null;
+    }
+    
+    // Remove audio tracks from peer connections
+    peerConnections.forEach((pc, remoteSessionId) => {
+      const senders = pc.getSenders();
+      senders.forEach(sender => {
+        if (sender.track && sender.track.kind === 'audio') {
+          pc.removeTrack(sender);
+        }
+      });
+    });
+    
+    await cameraStatusRef.update({ 
+      micEnabled: false,
+      name: userName
+    });
+  }
+  
+  updateMicButton();
+  updateCameraDisplay();
+}
+
+function updateCameraButton() {
+  const btn = document.getElementById('toggleCameraBtn');
+  if (!btn) return;
+  
+  if (cameraEnabled) {
+    btn.textContent = 'Disable Camera';
+    btn.classList.add('disabled');
+  } else {
+    btn.textContent = 'Enable Camera';
+    btn.classList.remove('disabled');
+  }
+}
+
+function updateMicButton() {
+  const btn = document.getElementById('toggleMicBtn');
+  if (!btn) return;
+  
+  if (micEnabled) {
+    btn.textContent = '🎤 Disable Microphone';
+    btn.classList.add('disabled');
+  } else {
+    btn.textContent = '🎤 Enable Microphone';
+    btn.classList.remove('disabled');
+  }
+}
+
+async function updateCameraDisplay() {
+  const videosContainer = document.getElementById('cameraVideos');
+  if (!videosContainer) return;
+  
+  const snapshot = await allCamerasRef.once('value');
+  
+  videosContainer.innerHTML = '';
+  
+  if (!snapshot.exists()) {
+    videosContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px; text-align: center;">No cameras active</p>';
+    return;
+  }
+  
+  const cameras = snapshot.val();
+  
+  Object.entries(cameras).forEach(([sessionId, data]) => {
+    const videoItem = document.createElement('div');
+    videoItem.className = 'camera-video-item';
+    
+    const isCurrentUser = sessionId === userSessionId;
+    const displayName = isCurrentUser ? `${data.name} (You)` : data.name;
+    
+    if (data.enabled) {
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = isCurrentUser;
+      video.id = `video-${sessionId}`;
+      
+      if (isCurrentUser && localStream) {
+        video.srcObject = localStream;
+        video.onloadedmetadata = () => {
+          video.play().catch(e => console.error('Play error:', e));
+        };
+      }
+      
+      videoItem.appendChild(video);
+      
+      const label = document.createElement('div');
+      label.className = 'camera-video-label';
+      label.textContent = displayName;
+      videoItem.appendChild(label);
+      
+      // Add mic indicator
+      if (data.micEnabled) {
+        const micIndicator = document.createElement('div');
+        micIndicator.className = 'mic-indicator active';
+        micIndicator.textContent = '🎤';
+        videoItem.appendChild(micIndicator);
+      }
+    } else {
+      videoItem.classList.add('disabled');
+      const nameDisplay = document.createElement('div');
+      nameDisplay.className = 'user-name-display';
+      nameDisplay.textContent = displayName;
+      
+      // Show mic indicator even if camera is off
+      if (data.micEnabled) {
+        nameDisplay.textContent += ' 🎤';
+      }
+      
+      videoItem.appendChild(nameDisplay);
+    }
+    
+    videosContainer.appendChild(videoItem);
+  });
+}
+
+function toggleCameraPanel() {
+  const cameraPanel = document.getElementById('cameraPanel');
+  const cameraBtn = document.getElementById('cameraMenuBtn');
+  
+  if (!cameraPanel) return;
+  
+  const isVisible = cameraPanel.style.display === 'flex';
+  cameraPanel.style.display = isVisible ? 'none' : 'flex';
+  
+  if (cameraBtn) {
+    cameraBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
+  }
+  
+  if (!isVisible) {
+    updateCameraDisplay();
+  }
+}
+
+// ==================== Room History Management ====================
+function saveRoomToHistory(roomId) {
+  if (roomId === 'public') return;
+  
+  try {
+    const savedHistory = getStorage('roomHistory');
+    let history = savedHistory ? JSON.parse(savedHistory) : [];
+    
+    history = history.filter(item => item.roomId !== roomId);
+    
+    history.unshift({
+      roomId: roomId,
+      timestamp: Date.now()
+    });
+    
+    history = history.slice(0, 10);
+    
+    setStorage('roomHistory', JSON.stringify(history));
+  } catch (err) {
+    console.error('Error saving room to history:', err);
+  }
+}
+
+function removeRoomFromHistory(roomId) {
+  try {
+    const savedHistory = getStorage('roomHistory');
+    let history = savedHistory ? JSON.parse(savedHistory) : [];
+    history = history.filter(item => item.roomId !== roomId);
+    setStorage('roomHistory', JSON.stringify(history));
+  } catch (err) {
+    console.error('Error removing room from history:', err);
+  }
+}
+
+async function loadRoomHistory() {
+  const historyContainer = document.getElementById('roomHistoryList');
+  if (!historyContainer) return;
+  
+  try {
+    const savedHistory = getStorage('roomHistory');
+    const history = savedHistory ? JSON.parse(savedHistory) : [];
+    
+    if (history.length === 0) {
+      historyContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No recent rooms</p>';
+      return;
+    }
+    
+    historyContainer.innerHTML = '';
+    
+    for (const item of history) {
+      const roomId = item.roomId;
+      
+      const roomSnapshot = await db.ref(`rooms/${roomId}`).once('value');
+      const roomData = roomSnapshot.val();
+      const isDeleted = !roomData || roomData.deleted === true;
+      
+      const roomItem = document.createElement('div');
+      roomItem.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px;
+        margin-bottom: 8px;
+        background: hsl(217, 20%, 20%);
+        border: 1px solid hsl(217, 20%, 25%);
+        border-radius: 8px;
+        ${isDeleted ? 'opacity: 0.5;' : ''}
+      `;
+      
+      const roomInfo = document.createElement('div');
+      roomInfo.style.cssText = 'flex: 1;';
+      
+      const roomIdText = document.createElement('div');
+      roomIdText.textContent = roomId;
+      roomIdText.style.cssText = `
+        color: ${isDeleted ? 'hsl(0, 60%, 50%)' : 'hsl(220, 90%, 56%)'};
+        font-weight: 600;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 14px;
+        margin-bottom: 4px;
+      `;
+      
+      const statusText = document.createElement('div');
+      statusText.style.cssText = 'color: hsl(217, 10%, 70%); font-size: 12px;';
+      
+      if (isDeleted) {
+        statusText.textContent = '🔒 Room Deleted';
+      } else {
+        const timeAgo = getTimeAgo(item.timestamp);
+        statusText.textContent = `Last visited ${timeAgo}`;
+      }
+      
+      roomInfo.appendChild(roomIdText);
+      roomInfo.appendChild(statusText);
+      
+      const btnContainer = document.createElement('div');
+      btnContainer.style.cssText = 'display: flex; gap: 6px;';
+      
+      if (isDeleted) {
+        const removeBtn = document.createElement('button');
+        removeBtn.textContent = 'Remove';
+        removeBtn.style.cssText = `
+          padding: 6px 14px;
+          background: hsl(0, 84%, 48%);
+          color: white;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 500;
+        `;
+        removeBtn.onclick = () => {
+          removeRoomFromHistory(roomId);
+          loadRoomHistory();
+        };
+        btnContainer.appendChild(removeBtn);
+      } else {
+        const joinBtn = document.createElement('button');
+        joinBtn.textContent = 'Join';
+        joinBtn.style.cssText = `
+          padding: 6px 14px;
+          background: hsl(220, 90%, 56%);
+          color: white;
+          border: none;
+          border-radius: 6px;
+          cursor: pointer;
+          font-size: 13px;
+          font-weight: 500;
+        `;
+        joinBtn.onclick = () => {
+          joinRoom(roomId);
+          roomDropdown.classList.remove('show');
+        };
+        btnContainer.appendChild(joinBtn);
+      }
+      
+      roomItem.appendChild(roomInfo);
+      roomItem.appendChild(btnContainer);
+      historyContainer.appendChild(roomItem);
+    }
+    
+  } catch (err) {
+    console.error('Error loading room history:', err);
+    historyContainer.innerHTML = '<p style="color: hsl(0, 60%, 50%); font-size: 13px; padding: 8px;">Error loading history</p>';
+  }
+}
+
+function getTimeAgo(timestamp) {
+  const seconds = Math.floor((Date.now() - timestamp) / 1000);
+  
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+  return `${Math.floor(seconds / 604800)}w ago`;
+}
+
+// ==================== Room Management ====================
+let currentRoomId = null;
+let currentPageId = 'page1';
+let linesRef = null;
+let textsRef = null;
+let roomDeletedRef = null;
+let roomClearedRef = null;
+let isJoiningRoom = false;
+
+function generateRoomCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
+async function joinRoom(roomId, password = null) {
+  if (roomId !== 'public') {
+    const roomRef = db.ref(`rooms/${roomId}`);
+    const roomSnapshot = await roomRef.once('value');
+    
+    const roomData = roomSnapshot.val();
+    
+    if (!roomData || roomData.deleted === true) {
+      alert('Room does not exist');
+      joinRoom('public');
+      return;
+    }
+    
+    const hasLines = roomData && roomData.lines;
+    const hasTexts = roomData && roomData.texts;
+    const hasPassword = roomData && roomData.password;
+    
+    const roomExists = hasPassword || hasLines || hasTexts;
+    
+    if (!roomExists && roomData === null) {
+      alert('Room does not exist');
+      joinRoom('public');
+      return;
+    }
+    
+    const passwordRef = db.ref(`rooms/${roomId}/password`);
+    const passwordSnapshot = await passwordRef.once('value');
+    const storedPassword = passwordSnapshot.val();
+
+    if (storedPassword) {
+      if (password === null) {
+        const inputPassword = prompt('This room is password protected. Enter the passkey:');
+        if (!inputPassword) {
+          joinRoom('public');
+          return;
+        }
+        password = inputPassword;
+      }
+
+      if (password !== storedPassword) {
+        alert('Incorrect Passkey');
+        joinRoom('public');
+        return;
+      }
+    }
+  }
+
+  if (linesRef) linesRef.off();
+  if (textsRef) textsRef.off();
+  if (roomDeletedRef) roomDeletedRef.off();
+  if (roomClearedRef) roomClearedRef.off();
+
+  currentRoomId = roomId;
+  currentPageId = 'page1';
+  linesRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/lines`);
+  textsRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/texts`);
+
+  isJoiningRoom = true;
+  linesCache.length = 0;
+  textsCache.clear();
+  drawAll();
+
+  setupFirebaseListeners();
+  setupRoomDeletionListener();
+  setupRoomClearedListener();
+  updateRoomIndicator();
+  updatePageIndicator();
+  
+  setupPresence(roomId);
+  setupChatForRoom(roomId);
+  setupCameraForRoom(roomId);
+
+  window.location.hash = roomId;
+  
+  saveRoomToHistory(roomId);
+  
+  setTimeout(() => { isJoiningRoom = false; }, 1000);
+}
+
+function setupRoomDeletionListener() {
+  if (currentRoomId === 'public') return;
+  
+  roomDeletedRef = db.ref(`rooms/${currentRoomId}/deleted`);
+  roomDeletedRef.on('value', snapshot => {
+    if (snapshot.val() === true) {
+      alert('Sorry, this room has been deleted by the owner.');
+      joinRoom('public');
+    }
+  });
+}
+
+function setupRoomClearedListener() {
+  roomClearedRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`);
+  roomClearedRef.on('value', snapshot => {
+    if (!isJoiningRoom && snapshot.exists()) {
+      linesCache.length = 0;
+      textsCache.clear();
+      drawAll();
+    }
+  });
+}
+
+async function updatePageIndicator() {
+  const indicator = document.getElementById('pageIndicator');
+  if (indicator && currentRoomId) {
+    try {
+      const pageSnapshot = await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/name`).once('value');
+      const customName = pageSnapshot.val();
+      
+      if (customName) {
+        indicator.textContent = customName;
+      } else {
+        const pageNum = currentPageId.replace('page', '');
+        indicator.textContent = `Page ${pageNum}`;
+      }
+    } catch (err) {
+      const pageNum = currentPageId.replace('page', '');
+      indicator.textContent = `Page ${pageNum}`;
+    }
+  }
+}
+
+async function switchPage(pageId) {
+  if (pageId === currentPageId) return;
+  
+  if (linesRef) linesRef.off();
+  if (textsRef) textsRef.off();
+  if (roomClearedRef) roomClearedRef.off();
+  
+  currentPageId = pageId;
+  linesRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`);
+  textsRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`);
+  
+  isJoiningRoom = true;
+  linesCache.length = 0;
+  textsCache.clear();
+  drawAll();
+  
+  setupFirebaseListeners();
+  setupRoomClearedListener();
+  updatePageIndicator();
+  
+  setTimeout(() => { isJoiningRoom = false; }, 1000);
+}
+
+function updateRoomIndicator() {
+  const indicator = document.getElementById('roomIndicator');
+  const menuBtn = document.getElementById('roomMenuBtn');
+  const roomCodeDisplay = document.getElementById('roomCodeDisplay');
+  const deleteBtn = document.getElementById('deleteRoomBtn');
+  const copyBtn = document.getElementById('copyRoomBtn');
+  const pageMenuBtn = document.getElementById('pageMenuBtn');
+  const activeUsersSection = document.getElementById('activeUsersSection');
+  const activeUsersDivider = document.getElementById('activeUsersDivider');
+
+  if (indicator && currentRoomId) {
+    if (currentRoomId === 'public') {
+      indicator.textContent = 'Public Canvas';
+      menuBtn?.classList.add('public');
+      if (roomCodeDisplay) {
+        roomCodeDisplay.textContent = 'You are on the public canvas';
+        roomCodeDisplay.style.fontFamily = 'Inter, system-ui, sans-serif';
+      }
+      if (deleteBtn) deleteBtn.style.display = 'none';
+      if (copyBtn) copyBtn.style.display = 'none';
+      if (pageMenuBtn) pageMenuBtn.style.display = 'none';
+      if (activeUsersSection) activeUsersSection.style.display = 'none';
+      if (activeUsersDivider)
