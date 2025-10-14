@@ -472,7 +472,6 @@
       gap: 8px;
       background: hsl(217, 25%, 18%);
       border-top: 1px solid hsl(217, 22%, 20%);
-      flex-direction: column;
     }
 
     .camera-toggle-btn {
@@ -500,11 +499,11 @@
       background: hsl(0, 84%, 40%);
     }
 
-    .mic-toggle-btn {
+    .microphone-toggle-btn {
       flex: 1;
       padding: 10px;
-      background: hsl(280, 70%, 55%);
-      color: white;
+      background: hsl(217, 20%, 24%);
+      color: hsl(217, 10%, 88%);
       border: none;
       border-radius: 8px;
       cursor: pointer;
@@ -513,40 +512,17 @@
       transition: all 150ms;
     }
 
-    .mic-toggle-btn:hover {
-      background: hsl(280, 70%, 48%);
+    .microphone-toggle-btn:hover {
+      background: hsl(217, 20%, 28%);
     }
 
-    .mic-toggle-btn.disabled {
-      background: hsl(0, 84%, 48%);
-    }
-
-    .mic-toggle-btn.disabled:hover {
-      background: hsl(0, 84%, 40%);
-    }
-
-    .mic-indicator {
-      position: absolute;
-      top: 6px;
-      right: 6px;
-      background: rgba(0, 0, 0, 0.8);
-      color: white;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-      display: none;
-    }
-
-    .mic-indicator.active {
-      display: block;
+    .microphone-toggle-btn.enabled {
       background: hsl(142, 76%, 55%);
-      animation: micPulse 1s ease-in-out infinite;
+      color: white;
     }
 
-    @keyframes micPulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.6; }
+    .microphone-toggle-btn.enabled:hover {
+      background: hsl(142, 76%, 48%);
     }
 
     .chat-menu-btn {
@@ -845,17 +821,17 @@
   <div id="cameraContainer" class="camera-container" style="display: none;">
     <div id="cameraMenuBtn" class="camera-menu-btn">
       <span>📹</span>
-      <span>Cameras</span>
+      <span>Video/Audio</span>
     </div>
     <div id="cameraPanel" class="camera-panel">
       <div class="camera-header">
-        <h3>Room Cameras</h3>
+        <h3>Video & Audio</h3>
         <button id="closeCameraBtn" class="close-camera-btn">✕</button>
       </div>
       <div id="cameraVideos" class="camera-videos"></div>
       <div class="camera-controls">
         <button id="toggleCameraBtn" class="camera-toggle-btn">Enable Camera</button>
-        <button id="toggleMicBtn" class="mic-toggle-btn">Enable Microphone</button>
+        <button id="toggleMicrophoneBtn" class="microphone-toggle-btn">🎤 Enable Mic</button>
       </div>
     </div>
   </div>
