@@ -300,6 +300,7 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
   }
   
   peerConnection.ontrack = (event) => {
+    console.log('Received track:', event.track.kind, 'from:', remoteSessionId);
     const remoteStream = event.streams[0];
     displayRemoteVideo(remoteSessionId, remoteStream);
   };
@@ -313,6 +314,10 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
         from: userSessionId
       });
     }
+  };
+  
+  peerConnection.oniceconnectionstatechange = () => {
+    console.log('ICE connection state:', peerConnection.iceConnectionState, 'for:', remoteSessionId);
   };
   
   const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
@@ -376,12 +381,26 @@ function closePeerConnection(remoteSessionId) {
     db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
     db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
   }
+  
+  // Remove video element
+  const videoElement = document.getElementById(`video-${remoteSessionId}`);
+  if (videoElement && videoElement.srcObject) {
+    videoElement.srcObject.getTracks().forEach(track => track.stop());
+    videoElement.srcObject = null;
+  }
 }
 
 function displayRemoteVideo(remoteSessionId, remoteStream) {
-  const videoElement = document.getElementById(`video-${remoteSessionId}`);
+  let videoElement = document.getElementById(`video-${remoteSessionId}`);
+  
   if (videoElement) {
+    // Update existing element
     videoElement.srcObject = remoteStream;
+    // CRITICAL: Don't mute remote users!
+    videoElement.muted = false;
+  } else {
+    // Will be created by updateCameraDisplay
+    console.log('Video element not found yet for:', remoteSessionId);
   }
 }
 
@@ -641,6 +660,7 @@ async function updateCameraDisplay() {
       const video = document.createElement('video');
       video.autoplay = true;
       video.playsInline = true;
+      // CRITICAL: Only mute YOUR OWN video, never mute remote users!
       video.muted = isCurrentUser;
       video.id = `video-${sessionId}`;
       
@@ -663,6 +683,12 @@ async function updateCameraDisplay() {
         `;
         micOnly.textContent = '🎤';
         videoItem.appendChild(micOnly);
+        
+        // Still add the hidden video element for audio
+        video.style.position = 'absolute';
+        video.style.opacity = '0';
+        video.style.pointerEvents = 'none';
+        videoItem.appendChild(video);
       } else {
         videoItem.appendChild(video);
       }
