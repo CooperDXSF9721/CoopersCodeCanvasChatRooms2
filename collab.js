@@ -409,7 +409,8 @@ async function toggleCamera() {
       
       localStream.addTrack(videoTrack);
       
-      peerConnections.forEach(async (pc) => {
+      // Update peer connections with renegotiation
+      for (const [sessionId, pc] of peerConnections.entries()) {
         const senders = pc.getSenders();
         const videoSender = senders.find(s => s.track && s.track.kind === 'video');
         
@@ -417,8 +418,17 @@ async function toggleCamera() {
           await videoSender.replaceTrack(videoTrack);
         } else {
           pc.addTrack(videoTrack, localStream);
+          // Renegotiate after adding new track
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          
+          db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).push({
+            type: 'offer',
+            offer: pc.localDescription.toJSON(),
+            from: userSessionId
+          });
         }
-      });
+      }
       
       await cameraStatusRef.update({ 
         enabled: true,
@@ -501,7 +511,8 @@ async function toggleMicrophone() {
       
       localStream.addTrack(audioTrack);
       
-      peerConnections.forEach(async (pc) => {
+      // Update peer connections with renegotiation
+      for (const [sessionId, pc] of peerConnections.entries()) {
         const senders = pc.getSenders();
         const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
         
@@ -509,8 +520,17 @@ async function toggleMicrophone() {
           await audioSender.replaceTrack(audioTrack);
         } else {
           pc.addTrack(audioTrack, localStream);
+          // Renegotiate after adding new track
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          
+          db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).push({
+            type: 'offer',
+            offer: pc.localDescription.toJSON(),
+            from: userSessionId
+          });
         }
-      });
+      }
       
       await cameraStatusRef.update({ 
         micEnabled: true,
