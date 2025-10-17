@@ -1,4 +1,855 @@
-const roomItem = document.createElement('div');
+// ==================== Firebase Config ====================
+const firebaseConfig = {
+  apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
+  authDomain: "cooperscodeart.firebaseapp.com",
+  projectId: "cooperscodeart",
+  storageBucket: "cooperscodeart.firebasestorage.app",
+  messagingSenderId: "632469567217",
+  appId: "1:632469567217:web:14278c59ad762e67eedb50",
+  measurementId: "G-NXS0EPJR61"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+// ==================== Storage Helper ====================
+function setStorage(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (e) {
+    console.warn('localStorage not available, data will not persist');
+    return false;
+  }
+}
+
+function getStorage(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+// ==================== User Management ====================
+let userName = null;
+let userSessionId = null;
+let presenceRef = null;
+let usersRef = null;
+
+function generateSessionId() {
+  return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+function getUserName() {
+  if (userName) return userName;
+  
+  const savedName = getStorage('userName');
+  if (savedName) {
+    userName = savedName;
+    return userName;
+  }
+  
+  userName = 'Anonymous';
+  setStorage('userName', userName);
+  return userName;
+}
+
+function changeUserName() {
+  const newName = prompt('Enter your name:', userName || 'Anonymous');
+  if (newName && newName.trim()) {
+    userName = newName.trim();
+    setStorage('userName', userName);
+    
+    if (presenceRef && currentRoomId !== 'public') {
+      presenceRef.update({ name: userName });
+    }
+  }
+}
+
+function setupPresence(roomId) {
+  if (!roomId || roomId === 'public') return;
+  
+  if (presenceRef) {
+    presenceRef.remove();
+    presenceRef = null;
+  }
+  
+  if (usersRef) {
+    usersRef.off();
+    usersRef = null;
+  }
+  
+  userSessionId = generateSessionId();
+  
+  presenceRef = db.ref(`rooms/${roomId}/users/${userSessionId}`);
+  usersRef = db.ref(`rooms/${roomId}/users`);
+  
+  presenceRef.set({
+    name: userName,
+    timestamp: firebase.database.ServerValue.TIMESTAMP
+  });
+  
+  presenceRef.onDisconnect().remove();
+  
+  usersRef.on('value', snapshot => {
+    updateActiveUsers(snapshot);
+  });
+}
+
+function updateActiveUsers(snapshot) {
+  const usersContainer = document.getElementById('activeUsersList');
+  const userCount = document.getElementById('activeUserCount');
+  
+  if (!snapshot.exists()) {
+    if (usersContainer) {
+      usersContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No users online</p>';
+    }
+    if (userCount) {
+      userCount.textContent = '0';
+    }
+    return;
+  }
+  
+  const users = snapshot.val();
+  const userList = Object.entries(users).map(([id, data]) => ({
+    id,
+    name: data.name || 'Anonymous',
+    timestamp: data.timestamp || 0
+  }));
+  
+  userList.sort((a, b) => a.timestamp - b.timestamp);
+  
+  if (usersContainer) {
+    usersContainer.innerHTML = '';
+    
+    userList.forEach(user => {
+      const userItem = document.createElement('div');
+      userItem.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        margin-bottom: 6px;
+        background: hsl(217, 20%, 20%);
+        border: 1px solid hsl(217, 20%, 25%);
+        border-radius: 6px;
+      `;
+      
+      const statusDot = document.createElement('div');
+      statusDot.style.cssText = `
+        width: 8px;
+        height: 8px;
+        background: hsl(142, 76%, 55%);
+        border-radius: 50%;
+        flex-shrink: 0;
+      `;
+      
+      const nameText = document.createElement('div');
+      nameText.textContent = user.name;
+      nameText.style.cssText = `
+        color: hsl(217, 10%, 92%);
+        font-size: 14px;
+        font-weight: 500;
+      `;
+      
+      if (user.id === userSessionId) {
+        nameText.textContent += ' (you)';
+        nameText.style.color = 'hsl(220, 90%, 56%)';
+      }
+      
+      userItem.appendChild(statusDot);
+      userItem.appendChild(nameText);
+      usersContainer.appendChild(userItem);
+    });
+  }
+  
+  if (userCount) {
+    userCount.textContent = userList.length.toString();
+  }
+}
+
+// ==================== Chat System ====================
+let chatMessagesRef = null;
+let chatCache = [];
+
+// ==================== Camera & Microphone System ====================
+let localStream = null;
+let cameraEnabled = false;
+let microphoneEnabled = false;
+let cameraStatusRef = null;
+let allCamerasRef = null;
+let peerConnections = new Map();
+let signalingRefs = new Map();
+
+// WebRTC Configuration with public STUN servers
+const rtcConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
+  ]
+};
+
+async function setupCameraForRoom(roomId) {
+  if (roomId === 'public') {
+    const cameraContainer = document.getElementById('cameraContainer');
+    if (cameraContainer) cameraContainer.style.display = 'none';
+    
+    cleanupCamera();
+    return;
+  }
+  
+  const cameraContainer = document.getElementById('cameraContainer');
+  if (cameraContainer) cameraContainer.style.display = 'flex';
+  
+  cleanupCamera();
+  
+  cameraStatusRef = db.ref(`rooms/${roomId}/cameraStatus/${userSessionId}`);
+  allCamerasRef = db.ref(`rooms/${roomId}/cameraStatus`);
+  
+  cameraStatusRef.set({
+    name: userName,
+    enabled: false,
+    micEnabled: false,
+    timestamp: firebase.database.ServerValue.TIMESTAMP
+  });
+  
+  cameraStatusRef.onDisconnect().remove();
+  
+  allCamerasRef.on('child_added', async snapshot => {
+    const sessionId = snapshot.key;
+    const data = snapshot.val();
+    
+    if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && (cameraEnabled || microphoneEnabled)) {
+      await createPeerConnection(sessionId, true);
+    }
+    
+    updateCameraDisplay();
+  });
+  
+  allCamerasRef.on('child_changed', async snapshot => {
+    const sessionId = snapshot.key;
+    const data = snapshot.val();
+    
+    if (sessionId !== userSessionId) {
+      if ((data.enabled || data.micEnabled) && (cameraEnabled || microphoneEnabled)) {
+        if (!peerConnections.has(sessionId)) {
+          await createPeerConnection(sessionId, true);
+        }
+      } else if (!data.enabled && !data.micEnabled) {
+        closePeerConnection(sessionId);
+      }
+    }
+    
+    updateCameraDisplay();
+  });
+  
+  allCamerasRef.on('child_removed', snapshot => {
+    const sessionId = snapshot.key;
+    closePeerConnection(sessionId);
+    updateCameraDisplay();
+  });
+}
+
+function cleanupCamera() {
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+    localStream = null;
+  }
+  
+  if (cameraStatusRef) {
+    cameraStatusRef.off();
+    cameraStatusRef = null;
+  }
+  
+  if (allCamerasRef) {
+    allCamerasRef.off();
+    allCamerasRef = null;
+  }
+  
+  peerConnections.forEach((pc, sessionId) => {
+    closePeerConnection(sessionId);
+  });
+  peerConnections.clear();
+  
+  signalingRefs.forEach((ref, sessionId) => {
+    ref.off();
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).remove();
+    db.ref(`rooms/${currentRoomId}/signaling/${sessionId}_${userSessionId}`).remove();
+  });
+  signalingRefs.clear();
+  
+  cameraEnabled = false;
+  microphoneEnabled = false;
+  updateCameraButton();
+  updateMicrophoneButton();
+}
+
+async function createPeerConnection(remoteSessionId, isInitiator) {
+  if (peerConnections.has(remoteSessionId)) {
+    return peerConnections.get(remoteSessionId);
+  }
+  
+  const peerConnection = new RTCPeerConnection(rtcConfiguration);
+  peerConnections.set(remoteSessionId, peerConnection);
+  
+  if (localStream) {
+    localStream.getTracks().forEach(track => {
+      peerConnection.addTrack(track, localStream);
+    });
+  }
+  
+  peerConnection.ontrack = (event) => {
+    const remoteStream = event.streams[0];
+    displayRemoteVideo(remoteSessionId, remoteStream);
+  };
+  
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      const signalingPath = `rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`;
+      db.ref(signalingPath).push({
+        type: 'candidate',
+        candidate: event.candidate.toJSON(),
+        from: userSessionId
+      });
+    }
+  };
+  
+  const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
+  const signalingRef = db.ref(incomingSignalingPath);
+  signalingRefs.set(remoteSessionId, signalingRef);
+  
+  signalingRef.on('child_added', async snapshot => {
+    const message = snapshot.val();
+    
+    try {
+      if (message.type === 'offer') {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        
+        db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+          type: 'answer',
+          answer: peerConnection.localDescription.toJSON(),
+          from: userSessionId
+        });
+      } else if (message.type === 'answer') {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
+      } else if (message.type === 'candidate') {
+        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
+      }
+    } catch (err) {
+      console.error('Error handling signaling message:', err);
+    }
+    
+    snapshot.ref.remove();
+  });
+  
+  if (isInitiator) {
+    const offer = await peerConnection.createOffer();
+    await peerConnection.setLocalDescription(offer);
+    
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
+      type: 'offer',
+      offer: peerConnection.localDescription.toJSON(),
+      from: userSessionId
+    });
+  }
+  
+  return peerConnection;
+}
+
+function closePeerConnection(remoteSessionId) {
+  const pc = peerConnections.get(remoteSessionId);
+  if (pc) {
+    pc.close();
+    peerConnections.delete(remoteSessionId);
+  }
+  
+  const signalingRef = signalingRefs.get(remoteSessionId);
+  if (signalingRef) {
+    signalingRef.off();
+    signalingRefs.delete(remoteSessionId);
+  }
+  
+  if (currentRoomId) {
+    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
+    db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
+  }
+}
+
+function displayRemoteVideo(remoteSessionId, remoteStream) {
+  const videoElement = document.getElementById(`video-${remoteSessionId}`);
+  if (videoElement) {
+    videoElement.srcObject = remoteStream;
+  }
+}
+
+async function toggleCamera() {
+  if (!currentRoomId || currentRoomId === 'public') return;
+  
+  cameraEnabled = !cameraEnabled;
+  
+  if (cameraEnabled) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { width: 640, height: 480 }, 
+        audio: false 
+      });
+      const videoTrack = newStream.getVideoTracks()[0];
+      
+      if (!localStream) {
+        localStream = new MediaStream();
+      }
+      
+      localStream.getVideoTracks().forEach(track => {
+        track.stop();
+        localStream.removeTrack(track);
+      });
+      
+      localStream.addTrack(videoTrack);
+      
+      peerConnections.forEach(async (pc) => {
+        const senders = pc.getSenders();
+        const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+        
+        if (videoSender) {
+          await videoSender.replaceTrack(videoTrack);
+        } else {
+          pc.addTrack(videoTrack, localStream);
+        }
+      });
+      
+      await cameraStatusRef.update({ 
+        enabled: true,
+        name: userName
+      });
+      
+      const snapshot = await allCamerasRef.once('value');
+      if (snapshot.exists()) {
+        const cameras = snapshot.val();
+        for (const [sessionId, data] of Object.entries(cameras)) {
+          if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && !peerConnections.has(sessionId)) {
+            await createPeerConnection(sessionId, false);
+          }
+        }
+      }
+      
+    } catch (err) {
+      console.error('Error accessing camera:', err);
+      alert('Could not access camera. Please check permissions.');
+      cameraEnabled = false;
+    }
+  } else {
+    if (localStream) {
+      localStream.getVideoTracks().forEach(track => {
+        track.stop();
+        localStream.removeTrack(track);
+      });
+      
+      peerConnections.forEach((pc) => {
+        const senders = pc.getSenders();
+        senders.forEach(sender => {
+          if (sender.track && sender.track.kind === 'video') {
+            pc.removeTrack(sender);
+          }
+        });
+      });
+      
+      if (localStream.getTracks().length === 0) {
+        localStream = null;
+        
+        if (!microphoneEnabled) {
+          peerConnections.forEach((pc, sessionId) => {
+            closePeerConnection(sessionId);
+          });
+        }
+      }
+    }
+    
+    await cameraStatusRef.update({ 
+      enabled: false,
+      name: userName
+    });
+  }
+  
+  updateCameraButton();
+  updateCameraDisplay();
+}
+
+async function toggleMicrophone() {
+  if (!currentRoomId || currentRoomId === 'public') return;
+  
+  microphoneEnabled = !microphoneEnabled;
+  
+  if (microphoneEnabled) {
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({ 
+        video: false, 
+        audio: true 
+      });
+      const audioTrack = newStream.getAudioTracks()[0];
+      
+      if (!localStream) {
+        localStream = new MediaStream();
+      }
+      
+      localStream.getAudioTracks().forEach(track => {
+        track.stop();
+        localStream.removeTrack(track);
+      });
+      
+      localStream.addTrack(audioTrack);
+      
+      peerConnections.forEach(async (pc) => {
+        const senders = pc.getSenders();
+        const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
+        
+        if (audioSender) {
+          await audioSender.replaceTrack(audioTrack);
+        } else {
+          pc.addTrack(audioTrack, localStream);
+        }
+      });
+      
+      await cameraStatusRef.update({ 
+        micEnabled: true,
+        name: userName
+      });
+      
+      const snapshot = await allCamerasRef.once('value');
+      if (snapshot.exists()) {
+        const cameras = snapshot.val();
+        for (const [sessionId, data] of Object.entries(cameras)) {
+          if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && !peerConnections.has(sessionId)) {
+            await createPeerConnection(sessionId, false);
+          }
+        }
+      }
+      
+    } catch (err) {
+      console.error('Error accessing microphone:', err);
+      alert('Could not access microphone. Please check permissions.');
+      microphoneEnabled = false;
+    }
+  } else {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.stop();
+        localStream.removeTrack(track);
+      });
+      
+      peerConnections.forEach((pc) => {
+        const senders = pc.getSenders();
+        senders.forEach(sender => {
+          if (sender.track && sender.track.kind === 'audio') {
+            pc.removeTrack(sender);
+          }
+        });
+      });
+      
+      if (localStream.getTracks().length === 0) {
+        localStream = null;
+        
+        if (!cameraEnabled) {
+          peerConnections.forEach((pc, sessionId) => {
+            closePeerConnection(sessionId);
+          });
+        }
+      }
+    }
+    
+    await cameraStatusRef.update({ 
+      micEnabled: false,
+      name: userName
+    });
+  }
+  
+  updateMicrophoneButton();
+  updateCameraDisplay();
+}
+
+function updateCameraButton() {
+  const btn = document.getElementById('toggleCameraBtn');
+  if (!btn) return;
+  
+  if (cameraEnabled) {
+    btn.textContent = 'Disable Camera';
+    btn.classList.add('disabled');
+  } else {
+    btn.textContent = 'Enable Camera';
+    btn.classList.remove('disabled');
+  }
+}
+
+function updateMicrophoneButton() {
+  const btn = document.getElementById('toggleMicrophoneBtn');
+  if (!btn) return;
+  
+  if (microphoneEnabled) {
+    btn.textContent = '🔇 Mute Mic';
+    btn.classList.add('enabled');
+  } else {
+    btn.textContent = '🎤 Enable Mic';
+    btn.classList.remove('enabled');
+  }
+}
+
+async function updateCameraDisplay() {
+  const videosContainer = document.getElementById('cameraVideos');
+  if (!videosContainer) return;
+  
+  const snapshot = await allCamerasRef.once('value');
+  
+  videosContainer.innerHTML = '';
+  
+  if (!snapshot.exists()) {
+    videosContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px; text-align: center;">No cameras or mics active</p>';
+    return;
+  }
+  
+  const cameras = snapshot.val();
+  
+  Object.entries(cameras).forEach(([sessionId, data]) => {
+    const videoItem = document.createElement('div');
+    videoItem.className = 'camera-video-item';
+    
+    const isCurrentUser = sessionId === userSessionId;
+    const displayName = isCurrentUser ? `${data.name} (You)` : data.name;
+    
+    if (data.enabled || data.micEnabled) {
+      const video = document.createElement('video');
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = isCurrentUser;
+      video.id = `video-${sessionId}`;
+      
+      if (isCurrentUser && localStream) {
+        video.srcObject = localStream;
+      }
+      
+      if (!data.enabled && data.micEnabled) {
+        video.style.display = 'none';
+        const micOnly = document.createElement('div');
+        micOnly.style.cssText = `
+          width: 100%;
+          height: 120px;
+          background: #000;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 48px;
+          border-radius: 6px;
+        `;
+        micOnly.textContent = '🎤';
+        videoItem.appendChild(micOnly);
+      } else {
+        videoItem.appendChild(video);
+      }
+      
+      const label = document.createElement('div');
+      label.className = 'camera-video-label';
+      label.textContent = displayName;
+      if (data.micEnabled) {
+        label.textContent += ' 🎤';
+      }
+      videoItem.appendChild(label);
+    } else {
+      videoItem.classList.add('disabled');
+      const nameDisplay = document.createElement('div');
+      nameDisplay.className = 'user-name-display';
+      nameDisplay.textContent = displayName;
+      videoItem.appendChild(nameDisplay);
+    }
+    
+    videosContainer.appendChild(videoItem);
+  });
+}
+
+function toggleCameraPanel() {
+  const cameraPanel = document.getElementById('cameraPanel');
+  const cameraBtn = document.getElementById('cameraMenuBtn');
+  
+  if (!cameraPanel) return;
+  
+  const isVisible = cameraPanel.style.display === 'flex';
+  cameraPanel.style.display = isVisible ? 'none' : 'flex';
+  
+  if (cameraBtn) {
+    cameraBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
+  }
+  
+  if (!isVisible) {
+    updateCameraDisplay();
+  }
+}
+
+function setupChatForRoom(roomId) {
+  if (roomId === 'public') {
+    const chatContainer = document.getElementById('chatContainer');
+    if (chatContainer) chatContainer.style.display = 'none';
+    
+    if (chatMessagesRef) {
+      chatMessagesRef.off();
+      chatMessagesRef = null;
+    }
+    chatCache = [];
+    return;
+  }
+  
+  const chatContainer = document.getElementById('chatContainer');
+  if (chatContainer) chatContainer.style.display = 'flex';
+  
+  if (chatMessagesRef) {
+    chatMessagesRef.off();
+  }
+  
+  chatMessagesRef = db.ref(`rooms/${roomId}/chat`);
+  chatCache = [];
+  
+  const messagesContainer = document.getElementById('chatMessages');
+  if (messagesContainer) messagesContainer.innerHTML = '';
+  
+  chatMessagesRef.on('child_added', snapshot => {
+    const msg = snapshot.val();
+    displayChatMessage(msg);
+    chatCache.push(msg);
+  });
+}
+
+function displayChatMessage(msg) {
+  const messagesContainer = document.getElementById('chatMessages');
+  if (!messagesContainer) return;
+  
+  const messageDiv = document.createElement('div');
+  messageDiv.className = 'chat-message';
+  
+  const isCurrentUser = msg.name === userName;
+  
+  messageDiv.style.cssText = `
+    margin: 8px 0;
+    padding: 10px 14px;
+    border-radius: 12px;
+    max-width: 75%;
+    font-size: 14px;
+    line-height: 1.4;
+    word-wrap: break-word;
+    ${isCurrentUser ? 'align-self: flex-end; background-color: hsl(220, 90%, 56%); color: white; border-bottom-right-radius: 4px;' : 'align-self: flex-start; background-color: hsl(217, 20%, 20%); color: hsl(217, 10%, 92%); border-bottom-left-radius: 4px;'}
+  `;
+  
+  const nameSpan = document.createElement('div');
+  nameSpan.style.cssText = `
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 4px;
+    ${isCurrentUser ? 'color: hsla(220, 90%, 98%, 0.9);' : 'color: hsl(220, 90%, 56%);'}
+  `;
+  nameSpan.textContent = isCurrentUser ? 'You' : msg.name;
+  
+  const textSpan = document.createElement('div');
+  textSpan.textContent = msg.text;
+  
+  messageDiv.appendChild(nameSpan);
+  messageDiv.appendChild(textSpan);
+  messagesContainer.appendChild(messageDiv);
+  
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function sendChatMessage() {
+  const input = document.getElementById('chatInput');
+  if (!input || !currentRoomId || currentRoomId === 'public') return;
+  
+  const text = input.value.trim();
+  if (!text) return;
+  
+  chatMessagesRef.push({
+    name: userName,
+    text: text,
+    timestamp: Date.now()
+  });
+  
+  input.value = '';
+}
+
+function toggleChatPanel() {
+  const chatPanel = document.getElementById('chatPanel');
+  const chatBtn = document.getElementById('chatMenuBtn');
+  
+  if (!chatPanel) return;
+  
+  const isVisible = chatPanel.style.display === 'flex';
+  chatPanel.style.display = isVisible ? 'none' : 'flex';
+  
+  if (chatBtn) {
+    chatBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
+  }
+  
+  if (!isVisible) {
+    const messagesContainer = document.getElementById('chatMessages');
+    if (messagesContainer) {
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+  }
+}
+
+// ==================== Room History Management ====================
+function saveRoomToHistory(roomId) {
+  if (roomId === 'public') return;
+  
+  try {
+    const savedHistory = getStorage('roomHistory');
+    let history = savedHistory ? JSON.parse(savedHistory) : [];
+    
+    history = history.filter(item => item.roomId !== roomId);
+    
+    history.unshift({
+      roomId: roomId,
+      timestamp: Date.now()
+    });
+    
+    history = history.slice(0, 10);
+    
+    setStorage('roomHistory', JSON.stringify(history));
+  } catch (err) {
+    console.error('Error saving room to history:', err);
+  }
+}
+
+function removeRoomFromHistory(roomId) {
+  try {
+    const savedHistory = getStorage('roomHistory');
+    let history = savedHistory ? JSON.parse(savedHistory) : [];
+    history = history.filter(item => item.roomId !== roomId);
+    setStorage('roomHistory', JSON.stringify(history));
+  } catch (err) {
+    console.error('Error removing room from history:', err);
+  }
+}
+
+async function loadRoomHistory() {
+  const historyContainer = document.getElementById('roomHistoryList');
+  if (!historyContainer) return;
+  
+  try {
+    const savedHistory = getStorage('roomHistory');
+    const history = savedHistory ? JSON.parse(savedHistory) : [];
+    
+    if (history.length === 0) {
+      historyContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No recent rooms</p>';
+      return;
+    }
+    
+    historyContainer.innerHTML = '';
+    
+    for (const item of history) {
+      const roomId = item.roomId;
+      
+      const roomSnapshot = await db.ref(`rooms/${roomId}`).once('value');
+      const roomData = roomSnapshot.val();
+      const isDeleted = !roomData || roomData.deleted === true;
+      
+      const roomItem = document.createElement('div');
       roomItem.style.cssText = `
         display: flex;
         align-items: center;
@@ -1315,7 +2166,6 @@ window.addEventListener('load', () => {
   
   getUserName();
   
-  // Chat event listeners
   const chatMenuBtn = document.getElementById('chatMenuBtn');
   const closeChatBtn = document.getElementById('closeChatBtn');
   const sendChatBtn = document.getElementById('sendChatBtn');
@@ -1341,7 +2191,6 @@ window.addEventListener('load', () => {
     });
   }
   
-  // Camera and Microphone event listeners
   const cameraMenuBtn = document.getElementById('cameraMenuBtn');
   const closeCameraBtn = document.getElementById('closeCameraBtn');
   const toggleCameraBtn = document.getElementById('toggleCameraBtn');
@@ -1369,908 +2218,4 @@ window.addEventListener('load', () => {
   } else {
     joinRoom('public');
   }
-});// ==================== Firebase Config ====================
-const firebaseConfig = {
-  apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
-  authDomain: "cooperscodeart.firebaseapp.com",
-  projectId: "cooperscodeart",
-  storageBucket: "cooperscodeart.firebasestorage.app",
-  messagingSenderId: "632469567217",
-  appId: "1:632469567217:web:14278c59ad762e67eedb50",
-  measurementId: "G-NXS0EPJR61"
-};
-firebase.initializeApp(firebaseConfig);
-const db = firebase.database();
-
-// ==================== Storage Helper ====================
-function setStorage(key, value) {
-  try {
-    localStorage.setItem(key, value);
-    return true;
-  } catch (e) {
-    console.warn('localStorage not available, data will not persist');
-    return false;
-  }
-}
-
-function getStorage(key) {
-  try {
-    return localStorage.getItem(key);
-  } catch (e) {
-    return null;
-  }
-}
-
-// ==================== User Management ====================
-let userName = null;
-let userSessionId = null;
-let presenceRef = null;
-let usersRef = null;
-
-function generateSessionId() {
-  return 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
-
-function getUserName() {
-  if (userName) return userName;
-  
-  const savedName = getStorage('userName');
-  if (savedName) {
-    userName = savedName;
-    return userName;
-  }
-  
-  userName = 'Anonymous';
-  setStorage('userName', userName);
-  return userName;
-}
-
-function changeUserName() {
-  const newName = prompt('Enter your name:', userName || 'Anonymous');
-  if (newName && newName.trim()) {
-    userName = newName.trim();
-    setStorage('userName', userName);
-    
-    if (presenceRef && currentRoomId !== 'public') {
-      presenceRef.update({ name: userName });
-    }
-  }
-}
-
-function setupPresence(roomId) {
-  if (!roomId || roomId === 'public') return;
-  
-  if (presenceRef) {
-    presenceRef.remove();
-    presenceRef = null;
-  }
-  
-  if (usersRef) {
-    usersRef.off();
-    usersRef = null;
-  }
-  
-  userSessionId = generateSessionId();
-  
-  presenceRef = db.ref(`rooms/${roomId}/users/${userSessionId}`);
-  usersRef = db.ref(`rooms/${roomId}/users`);
-  
-  presenceRef.set({
-    name: userName,
-    timestamp: firebase.database.ServerValue.TIMESTAMP
-  });
-  
-  presenceRef.onDisconnect().remove();
-  
-  usersRef.on('value', snapshot => {
-    updateActiveUsers(snapshot);
-  });
-}
-
-function updateActiveUsers(snapshot) {
-  const usersContainer = document.getElementById('activeUsersList');
-  const userCount = document.getElementById('activeUserCount');
-  
-  if (!snapshot.exists()) {
-    if (usersContainer) {
-      usersContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No users online</p>';
-    }
-    if (userCount) {
-      userCount.textContent = '0';
-    }
-    return;
-  }
-  
-  const users = snapshot.val();
-  const userList = Object.entries(users).map(([id, data]) => ({
-    id,
-    name: data.name || 'Anonymous',
-    timestamp: data.timestamp || 0
-  }));
-  
-  userList.sort((a, b) => a.timestamp - b.timestamp);
-  
-  if (usersContainer) {
-    usersContainer.innerHTML = '';
-    
-    userList.forEach(user => {
-      const userItem = document.createElement('div');
-      userItem.style.cssText = `
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        padding: 8px;
-        margin-bottom: 6px;
-        background: hsl(217, 20%, 20%);
-        border: 1px solid hsl(217, 20%, 25%);
-        border-radius: 6px;
-      `;
-      
-      const statusDot = document.createElement('div');
-      statusDot.style.cssText = `
-        width: 8px;
-        height: 8px;
-        background: hsl(142, 76%, 55%);
-        border-radius: 50%;
-        flex-shrink: 0;
-      `;
-      
-      const nameText = document.createElement('div');
-      nameText.textContent = user.name;
-      nameText.style.cssText = `
-        color: hsl(217, 10%, 92%);
-        font-size: 14px;
-        font-weight: 500;
-      `;
-      
-      if (user.id === userSessionId) {
-        nameText.textContent += ' (you)';
-        nameText.style.color = 'hsl(220, 90%, 56%)';
-      }
-      
-      userItem.appendChild(statusDot);
-      userItem.appendChild(nameText);
-      usersContainer.appendChild(userItem);
-    });
-  }
-  
-  if (userCount) {
-    userCount.textContent = userList.length.toString();
-  }
-}
-
-// ==================== Chat System ====================
-let chatMessagesRef = null;
-let chatCache = [];
-
-// ==================== Camera & Microphone System ====================
-let localStream = null;
-let cameraEnabled = false;
-let microphoneEnabled = false;
-let cameraStatusRef = null;
-let allCamerasRef = null;
-let peerConnections = new Map();
-let signalingRefs = new Map();
-
-// WebRTC Configuration with public STUN servers
-const rtcConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
-  ]
-};
-
-async function setupCameraForRoom(roomId) {
-  if (roomId === 'public') {
-    const cameraContainer = document.getElementById('cameraContainer');
-    if (cameraContainer) cameraContainer.style.display = 'none';
-    
-    cleanupCamera();
-    return;
-  }
-  
-  const cameraContainer = document.getElementById('cameraContainer');
-  if (cameraContainer) cameraContainer.style.display = 'flex';
-  
-  cleanupCamera();
-  
-  cameraStatusRef = db.ref(`rooms/${roomId}/cameraStatus/${userSessionId}`);
-  allCamerasRef = db.ref(`rooms/${roomId}/cameraStatus`);
-  
-  cameraStatusRef.set({
-    name: userName,
-    enabled: false,
-    micEnabled: false,
-    timestamp: firebase.database.ServerValue.TIMESTAMP
-  });
-  
-  cameraStatusRef.onDisconnect().remove();
-  
-  // Listen for other users' camera status
-  allCamerasRef.on('child_added', async snapshot => {
-    const sessionId = snapshot.key;
-    const data = snapshot.val();
-    
-    if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && (cameraEnabled || microphoneEnabled)) {
-      // Create peer connection for this user
-      await createPeerConnection(sessionId, true);
-    }
-    
-    updateCameraDisplay();
-  });
-  
-  allCamerasRef.on('child_changed', async snapshot => {
-    const sessionId = snapshot.key;
-    const data = snapshot.val();
-    
-    if (sessionId !== userSessionId) {
-      if ((data.enabled || data.micEnabled) && (cameraEnabled || microphoneEnabled)) {
-        // Other user enabled camera or mic
-        if (!peerConnections.has(sessionId)) {
-          await createPeerConnection(sessionId, true);
-        }
-      } else if (!data.enabled && !data.micEnabled) {
-        // Other user disabled both camera and mic
-        closePeerConnection(sessionId);
-      }
-    }
-    
-    updateCameraDisplay();
-  });
-  
-  allCamerasRef.on('child_removed', snapshot => {
-    const sessionId = snapshot.key;
-    closePeerConnection(sessionId);
-    updateCameraDisplay();
-  });
-}
-
-function cleanupCamera() {
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-    localStream = null;
-  }
-  
-  if (cameraStatusRef) {
-    cameraStatusRef.off();
-    cameraStatusRef = null;
-  }
-  
-  if (allCamerasRef) {
-    allCamerasRef.off();
-    allCamerasRef = null;
-  }
-  
-  // Close all peer connections
-  peerConnections.forEach((pc, sessionId) => {
-    closePeerConnection(sessionId);
-  });
-  peerConnections.clear();
-  
-  // Clean up signaling listeners
-  signalingRefs.forEach((ref, sessionId) => {
-    ref.off();
-    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).remove();
-    db.ref(`rooms/${currentRoomId}/signaling/${sessionId}_${userSessionId}`).remove();
-  });
-  signalingRefs.clear();
-  
-  cameraEnabled = false;
-  microphoneEnabled = false;
-  updateCameraButton();
-  updateMicrophoneButton();
-}
-
-async function createPeerConnection(remoteSessionId, isInitiator) {
-  if (peerConnections.has(remoteSessionId)) {
-    return peerConnections.get(remoteSessionId);
-  }
-  
-  const peerConnection = new RTCPeerConnection(rtcConfiguration);
-  peerConnections.set(remoteSessionId, peerConnection);
-  
-  // Add local stream tracks to peer connection
-  if (localStream) {
-    localStream.getTracks().forEach(track => {
-      peerConnection.addTrack(track, localStream);
-    });
-  }
-  
-  // Handle incoming remote stream
-  peerConnection.ontrack = (event) => {
-    const remoteStream = event.streams[0];
-    displayRemoteVideo(remoteSessionId, remoteStream);
-  };
-  
-  // Handle ICE candidates
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      const signalingPath = `rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`;
-      db.ref(signalingPath).push({
-        type: 'candidate',
-        candidate: event.candidate.toJSON(),
-        from: userSessionId
-      });
-    }
-  };
-  
-  // Set up signaling listener
-  const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
-  const signalingRef = db.ref(incomingSignalingPath);
-  signalingRefs.set(remoteSessionId, signalingRef);
-  
-  signalingRef.on('child_added', async snapshot => {
-    const message = snapshot.val();
-    
-    try {
-      if (message.type === 'offer') {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.offer));
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        
-        db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
-          type: 'answer',
-          answer: peerConnection.localDescription.toJSON(),
-          from: userSessionId
-        });
-      } else if (message.type === 'answer') {
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(message.answer));
-      } else if (message.type === 'candidate') {
-        await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
-      }
-    } catch (err) {
-      console.error('Error handling signaling message:', err);
-    }
-    
-    // Clean up old signaling messages
-    snapshot.ref.remove();
-  });
-  
-  // If initiator, create and send offer
-  if (isInitiator) {
-    const offer = await peerConnection.createOffer();
-    await peerConnection.setLocalDescription(offer);
-    
-    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
-      type: 'offer',
-      offer: peerConnection.localDescription.toJSON(),
-      from: userSessionId
-    });
-  }
-  
-  return peerConnection;
-}
-
-function closePeerConnection(remoteSessionId) {
-  const pc = peerConnections.get(remoteSessionId);
-  if (pc) {
-    pc.close();
-    peerConnections.delete(remoteSessionId);
-  }
-  
-  const signalingRef = signalingRefs.get(remoteSessionId);
-  if (signalingRef) {
-    signalingRef.off();
-    signalingRefs.delete(remoteSessionId);
-  }
-  
-  // Clean up signaling paths
-  if (currentRoomId) {
-    db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
-    db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
-  }
-}
-
-function displayRemoteVideo(remoteSessionId, remoteStream) {
-  const videoElement = document.getElementById(`video-${remoteSessionId}`);
-  if (videoElement) {
-    videoElement.srcObject = remoteStream;
-  }
-}
-
-async function getMediaStream(video, audio) {
-  try {
-    const constraints = {};
-    if (video) constraints.video = { width: 640, height: 480 };
-    if (audio) constraints.audio = true;
-    
-    if (!video && !audio) return null;
-    
-    return await navigator.mediaDevices.getUserMedia(constraints);
-  } catch (err) {
-    console.error('Error getting media stream:', err);
-    throw err;
-  }
-}
-
-async function toggleCamera() {
-  if (!currentRoomId || currentRoomId === 'public') return;
-  
-  cameraEnabled = !cameraEnabled;
-  
-  if (cameraEnabled) {
-    try {
-      // Get new video stream
-      const newVideoStream = await getMediaStream(true, false);
-      const videoTrack = newVideoStream.getVideoTracks()[0];
-      
-      if (!localStream) {
-        // No existing stream, create new one
-        localStream = new MediaStream();
-      }
-      
-      // Remove old video tracks
-      localStream.getVideoTracks().forEach(track => {
-        track.stop();
-        localStream.removeTrack(track);
-      });
-      
-      // Add new video track
-      localStream.addTrack(videoTrack);
-      
-      // Update all peer connections with new video track
-      peerConnections.forEach(async (pc) => {
-        const senders = pc.getSenders();
-        const videoSender = senders.find(s => s.track && s.track.kind === 'video');
-        
-        if (videoSender) {
-          await videoSender.replaceTrack(videoTrack);
-        } else {
-          pc.addTrack(videoTrack, localStream);
-        }
-      });
-      
-      await cameraStatusRef.update({ 
-        enabled: true,
-        name: userName
-      });
-      
-      // Create peer connections with users who don't have one yet
-      const snapshot = await allCamerasRef.once('value');
-      if (snapshot.exists()) {
-        const cameras = snapshot.val();
-        for (const [sessionId, data] of Object.entries(cameras)) {
-          if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && !peerConnections.has(sessionId)) {
-            await createPeerConnection(sessionId, false);
-          }
-        }
-      }
-      
-    } catch (err) {
-      console.error('Error accessing camera:', err);
-      alert('Could not access camera. Please check permissions.');
-      cameraEnabled = false;
-    }
-  } else {
-    // Stop and remove video tracks
-    if (localStream) {
-      localStream.getVideoTracks().forEach(track => {
-        track.stop();
-        localStream.removeTrack(track);
-      });
-      
-      // Remove video tracks from peer connections
-      peerConnections.forEach((pc) => {
-        const senders = pc.getSenders();
-        senders.forEach(sender => {
-          if (sender.track && sender.track.kind === 'video') {
-            pc.removeTrack(sender);
-          }
-        });
-      });
-      
-      // If no audio tracks either, clean up stream
-      if (localStream.getTracks().length === 0) {
-        localStream = null;
-        
-        // Close connections if both disabled
-        if (!microphoneEnabled) {
-          peerConnections.forEach((pc, sessionId) => {
-            closePeerConnection(sessionId);
-          });
-        }
-      }
-    }
-    
-    await cameraStatusRef.update({ 
-      enabled: false,
-      name: userName
-    });
-  }
-  
-  updateCameraButton();
-  updateCameraDisplay();
-}
-
-async function toggleMicrophone() {
-  if (!currentRoomId || currentRoomId === 'public') return;
-  
-  microphoneEnabled = !microphoneEnabled;
-  
-  if (microphoneEnabled) {
-    try {
-      // Get new audio stream
-      const newAudioStream = await getMediaStream(false, true);
-      const audioTrack = newAudioStream.getAudioTracks()[0];
-      
-      if (!localStream) {
-        // No existing stream, create new one
-        localStream = new MediaStream();
-      }
-      
-      // Remove old audio tracks
-      localStream.getAudioTracks().forEach(track => {
-        track.stop();
-        localStream.removeTrack(track);
-      });
-      
-      // Add new audio track
-      localStream.addTrack(audioTrack);
-      
-      // Update all peer connections with new audio track
-      peerConnections.forEach(async (pc) => {
-        const senders = pc.getSenders();
-        const audioSender = senders.find(s => s.track && s.track.kind === 'audio');
-        
-        if (audioSender) {
-          await audioSender.replaceTrack(audioTrack);
-        } else {
-          pc.addTrack(audioTrack, localStream);
-        }
-      });
-      
-      await cameraStatusRef.update({ 
-        micEnabled: true,
-        name: userName
-      });
-      
-      // Create peer connections with users who don't have one yet
-      const snapshot = await allCamerasRef.once('value');
-      if (snapshot.exists()) {
-        const cameras = snapshot.val();
-        for (const [sessionId, data] of Object.entries(cameras)) {
-          if (sessionId !== userSessionId && (data.enabled || data.micEnabled) && !peerConnections.has(sessionId)) {
-            await createPeerConnection(sessionId, false);
-          }
-        }
-      }
-      
-    } catch (err) {
-      console.error('Error accessing microphone:', err);
-      alert('Could not access microphone. Please check permissions.');
-      microphoneEnabled = false;
-    }
-  } else {
-    // Stop and remove audio tracks
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.stop();
-        localStream.removeTrack(track);
-      });
-      
-      // Remove audio tracks from peer connections
-      peerConnections.forEach((pc) => {
-        const senders = pc.getSenders();
-        senders.forEach(sender => {
-          if (sender.track && sender.track.kind === 'audio') {
-            pc.removeTrack(sender);
-          }
-        });
-      });
-      
-      // If no video tracks either, clean up stream
-      if (localStream.getTracks().length === 0) {
-        localStream = null;
-        
-        // Close connections if both disabled
-        if (!cameraEnabled) {
-          peerConnections.forEach((pc, sessionId) => {
-            closePeerConnection(sessionId);
-          });
-        }
-      }
-    }
-    
-    await cameraStatusRef.update({ 
-      micEnabled: false,
-      name: userName
-    });
-  }
-  
-  updateMicrophoneButton();
-  updateCameraDisplay();
-}
-
-function updateCameraButton() {
-  const btn = document.getElementById('toggleCameraBtn');
-  if (!btn) return;
-  
-  if (cameraEnabled) {
-    btn.textContent = 'Disable Camera';
-    btn.classList.add('disabled');
-  } else {
-    btn.textContent = 'Enable Camera';
-    btn.classList.remove('disabled');
-  }
-}
-
-function updateMicrophoneButton() {
-  const btn = document.getElementById('toggleMicrophoneBtn');
-  if (!btn) return;
-  
-  if (microphoneEnabled) {
-    btn.textContent = '🔇 Mute Mic';
-    btn.classList.add('enabled');
-  } else {
-    btn.textContent = '🎤 Enable Mic';
-    btn.classList.remove('enabled');
-  }
-}
-
-async function updateCameraDisplay() {
-  const videosContainer = document.getElementById('cameraVideos');
-  if (!videosContainer) return;
-  
-  const snapshot = await allCamerasRef.once('value');
-  
-  videosContainer.innerHTML = '';
-  
-  if (!snapshot.exists()) {
-    videosContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px; text-align: center;">No cameras or mics active</p>';
-    return;
-  }
-  
-  const cameras = snapshot.val();
-  
-  Object.entries(cameras).forEach(([sessionId, data]) => {
-    const videoItem = document.createElement('div');
-    videoItem.className = 'camera-video-item';
-    
-    const isCurrentUser = sessionId === userSessionId;
-    const displayName = isCurrentUser ? `${data.name} (You)` : data.name;
-    
-    if (data.enabled || data.micEnabled) {
-      const video = document.createElement('video');
-      video.autoplay = true;
-      video.playsInline = true;
-      video.muted = isCurrentUser;
-      video.id = `video-${sessionId}`;
-      
-      if (isCurrentUser && localStream) {
-        video.srcObject = localStream;
-      }
-      
-      // If only mic is enabled (no camera), show black screen with mic icon
-      if (!data.enabled && data.micEnabled) {
-        video.style.display = 'none';
-        const micOnly = document.createElement('div');
-        micOnly.style.cssText = `
-          width: 100%;
-          height: 120px;
-          background: #000;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 48px;
-          border-radius: 6px;
-        `;
-        micOnly.textContent = '🎤';
-        videoItem.appendChild(micOnly);
-      } else {
-        videoItem.appendChild(video);
-      }
-      
-      const label = document.createElement('div');
-      label.className = 'camera-video-label';
-      label.textContent = displayName;
-      if (data.micEnabled) {
-        label.textContent += ' 🎤';
-      }
-      videoItem.appendChild(label);
-    } else {
-      videoItem.classList.add('disabled');
-      const nameDisplay = document.createElement('div');
-      nameDisplay.className = 'user-name-display';
-      nameDisplay.textContent = displayName;
-      videoItem.appendChild(nameDisplay);
-    }
-    
-    videosContainer.appendChild(videoItem);
-  });
-}
-
-function toggleCameraPanel() {
-  const cameraPanel = document.getElementById('cameraPanel');
-  const cameraBtn = document.getElementById('cameraMenuBtn');
-  
-  if (!cameraPanel) return;
-  
-  const isVisible = cameraPanel.style.display === 'flex';
-  cameraPanel.style.display = isVisible ? 'none' : 'flex';
-  
-  if (cameraBtn) {
-    cameraBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
-  }
-  
-  if (!isVisible) {
-    updateCameraDisplay();
-  }
-}
-
-function setupChatForRoom(roomId) {
-  if (roomId === 'public') {
-    const chatContainer = document.getElementById('chatContainer');
-    if (chatContainer) chatContainer.style.display = 'none';
-    
-    if (chatMessagesRef) {
-      chatMessagesRef.off();
-      chatMessagesRef = null;
-    }
-    chatCache = [];
-    return;
-  }
-  
-  const chatContainer = document.getElementById('chatContainer');
-  if (chatContainer) chatContainer.style.display = 'flex';
-  
-  if (chatMessagesRef) {
-    chatMessagesRef.off();
-  }
-  
-  chatMessagesRef = db.ref(`rooms/${roomId}/chat`);
-  chatCache = [];
-  
-  const messagesContainer = document.getElementById('chatMessages');
-  if (messagesContainer) messagesContainer.innerHTML = '';
-  
-  chatMessagesRef.on('child_added', snapshot => {
-    const msg = snapshot.val();
-    displayChatMessage(msg);
-    chatCache.push(msg);
-  });
-}
-
-function displayChatMessage(msg) {
-  const messagesContainer = document.getElementById('chatMessages');
-  if (!messagesContainer) return;
-  
-  const messageDiv = document.createElement('div');
-  messageDiv.className = 'chat-message';
-  
-  const isCurrentUser = msg.name === userName;
-  
-  messageDiv.style.cssText = `
-    margin: 8px 0;
-    padding: 10px 14px;
-    border-radius: 12px;
-    max-width: 75%;
-    font-size: 14px;
-    line-height: 1.4;
-    word-wrap: break-word;
-    ${isCurrentUser ? 'align-self: flex-end; background-color: hsl(220, 90%, 56%); color: white; border-bottom-right-radius: 4px;' : 'align-self: flex-start; background-color: hsl(217, 20%, 20%); color: hsl(217, 10%, 92%); border-bottom-left-radius: 4px;'}
-  `;
-  
-  const nameSpan = document.createElement('div');
-  nameSpan.style.cssText = `
-    font-weight: 600;
-    font-size: 12px;
-    margin-bottom: 4px;
-    ${isCurrentUser ? 'color: hsla(220, 90%, 98%, 0.9);' : 'color: hsl(220, 90%, 56%);'}
-  `;
-  nameSpan.textContent = isCurrentUser ? 'You' : msg.name;
-  
-  const textSpan = document.createElement('div');
-  textSpan.textContent = msg.text;
-  
-  messageDiv.appendChild(nameSpan);
-  messageDiv.appendChild(textSpan);
-  messagesContainer.appendChild(messageDiv);
-  
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
-}
-
-function sendChatMessage() {
-  const input = document.getElementById('chatInput');
-  if (!input || !currentRoomId || currentRoomId === 'public') return;
-  
-  const text = input.value.trim();
-  if (!text) return;
-  
-  chatMessagesRef.push({
-    name: userName,
-    text: text,
-    timestamp: Date.now()
-  });
-  
-  input.value = '';
-}
-
-function toggleChatPanel() {
-  const chatPanel = document.getElementById('chatPanel');
-  const chatBtn = document.getElementById('chatMenuBtn');
-  
-  if (!chatPanel) return;
-  
-  const isVisible = chatPanel.style.display === 'flex';
-  chatPanel.style.display = isVisible ? 'none' : 'flex';
-  
-  if (chatBtn) {
-    chatBtn.style.background = isVisible ? 'hsl(217, 25%, 16%)' : 'hsl(220, 90%, 56%)';
-  }
-  
-  if (!isVisible) {
-    const messagesContainer = document.getElementById('chatMessages');
-    if (messagesContainer) {
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-  }
-}
-
-// ==================== Room History Management ====================
-function saveRoomToHistory(roomId) {
-  if (roomId === 'public') return;
-  
-  try {
-    const savedHistory = getStorage('roomHistory');
-    let history = savedHistory ? JSON.parse(savedHistory) : [];
-    
-    history = history.filter(item => item.roomId !== roomId);
-    
-    history.unshift({
-      roomId: roomId,
-      timestamp: Date.now()
-    });
-    
-    history = history.slice(0, 10);
-    
-    setStorage('roomHistory', JSON.stringify(history));
-  } catch (err) {
-    console.error('Error saving room to history:', err);
-  }
-}
-
-function removeRoomFromHistory(roomId) {
-  try {
-    const savedHistory = getStorage('roomHistory');
-    let history = savedHistory ? JSON.parse(savedHistory) : [];
-    history = history.filter(item => item.roomId !== roomId);
-    setStorage('roomHistory', JSON.stringify(history));
-  } catch (err) {
-    console.error('Error removing room from history:', err);
-  }
-}
-
-async function loadRoomHistory() {
-  const historyContainer = document.getElementById('roomHistoryList');
-  if (!historyContainer) return;
-  
-  try {
-    const savedHistory = getStorage('roomHistory');
-    const history = savedHistory ? JSON.parse(savedHistory) : [];
-    
-    if (history.length === 0) {
-      historyContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px;">No recent rooms</p>';
-      return;
-    }
-    
-    historyContainer.innerHTML = '';
-    
-    for (const item of history) {
-      const roomId = item.roomId;
-      
-      const roomSnapshot = await db.ref(`rooms/${roomId}`).once('value');
-      const roomData = roomSnapshot.val();
-      const isDeleted = !roomData || roomData.deleted === true;
-      
-      const roomItem = document.createElement('div');
-      roomItem.style.cssText = `
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px;
-        margin-bottom: 8px;
-        background: hsl(217, 20%, 20%);
-        border: 1px solid hsl(217, 20%, 25%);
-        border-radius: 8px;
-        ${isDeleted ? 'opacity:
+});
