@@ -293,7 +293,8 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
   const peerConnection = new RTCPeerConnection(rtcConfiguration);
   peerConnections.set(remoteSessionId, peerConnection);
   
-  if (localStream) {
+  // Add local tracks if we have any (camera or mic enabled)
+  if (localStream && localStream.getTracks().length > 0) {
     localStream.getTracks().forEach(track => {
       peerConnection.addTrack(track, localStream);
     });
@@ -351,7 +352,14 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
   });
   
   if (isInitiator) {
-    const offer = await peerConnection.createOffer();
+    // Create offer with recvonly if we have no tracks
+    const offerOptions = {};
+    if (!localStream || localStream.getTracks().length === 0) {
+      offerOptions.offerToReceiveAudio = true;
+      offerOptions.offerToReceiveVideo = true;
+    }
+    
+    const offer = await peerConnection.createOffer(offerOptions);
     await peerConnection.setLocalDescription(offer);
     
     db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).push({
