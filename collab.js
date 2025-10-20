@@ -648,14 +648,22 @@ async function updateCameraDisplay() {
   
   const snapshot = await allCamerasRef.once('value');
   
-  videosContainer.innerHTML = '';
-  
   if (!snapshot.exists()) {
     videosContainer.innerHTML = '<p style="color: hsl(217, 10%, 70%); font-size: 13px; padding: 8px; text-align: center;">No cameras or mics active</p>';
     return;
   }
   
   const cameras = snapshot.val();
+  const existingVideos = new Map();
+  
+  // Store existing video elements and their streams
+  videosContainer.querySelectorAll('video').forEach(video => {
+    if (video.id && video.srcObject) {
+      existingVideos.set(video.id, video.srcObject);
+    }
+  });
+  
+  videosContainer.innerHTML = '';
   
   Object.entries(cameras).forEach(([sessionId, data]) => {
     const videoItem = document.createElement('div');
@@ -668,11 +676,14 @@ async function updateCameraDisplay() {
       const video = document.createElement('video');
       video.autoplay = true;
       video.playsInline = true;
-      // CRITICAL: Only mute YOUR OWN video, never mute remote users!
       video.muted = isCurrentUser;
       video.id = `video-${sessionId}`;
       
-      if (isCurrentUser && localStream) {
+      // Restore existing stream if available
+      const existingStream = existingVideos.get(video.id);
+      if (existingStream) {
+        video.srcObject = existingStream;
+      } else if (isCurrentUser && localStream) {
         video.srcObject = localStream;
       }
       
@@ -736,6 +747,9 @@ function toggleCameraPanel() {
   if (!isVisible) {
     updateCameraDisplay();
   }
+  
+  // DON'T destroy connections when closing panel!
+  // Video elements remain in DOM even when panel is hidden
 }
 
 function setupChatForRoom(roomId) {
