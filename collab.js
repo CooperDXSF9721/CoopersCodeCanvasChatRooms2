@@ -654,12 +654,12 @@ async function updateCameraDisplay() {
   }
   
   const cameras = snapshot.val();
-  const existingVideos = new Map();
   
-  // Store existing video elements and their streams
+  // Get existing video elements to preserve them
+  const existingVideos = {};
   videosContainer.querySelectorAll('video').forEach(video => {
-    if (video.id && video.srcObject) {
-      existingVideos.set(video.id, video.srcObject);
+    if (video.id) {
+      existingVideos[video.id] = video;
     }
   });
   
@@ -673,21 +673,29 @@ async function updateCameraDisplay() {
     const displayName = isCurrentUser ? `${data.name} (You)` : data.name;
     
     if (data.enabled || data.micEnabled) {
-      const video = document.createElement('video');
-      video.autoplay = true;
-      video.playsInline = true;
-      video.muted = isCurrentUser;
-      video.id = `video-${sessionId}`;
+      const videoId = `video-${sessionId}`;
+      let video = existingVideos[videoId];
       
-      // Restore existing stream if available
-      const existingStream = existingVideos.get(video.id);
-      if (existingStream) {
-        video.srcObject = existingStream;
-      } else if (isCurrentUser && localStream) {
-        video.srcObject = localStream;
+      if (!video) {
+        // Create new video element
+        video = document.createElement('video');
+        video.autoplay = true;
+        video.playsInline = true;
+        video.muted = isCurrentUser;
+        video.id = videoId;
+        
+        console.log('Created new video element for:', sessionId);
+        
+        if (isCurrentUser && localStream) {
+          video.srcObject = localStream;
+        }
+      } else {
+        // Reuse existing video element (preserves stream!)
+        console.log('Reusing existing video element for:', sessionId);
       }
       
       if (!data.enabled && data.micEnabled) {
+        // Audio only - hide video but keep element for audio
         video.style.display = 'none';
         const micOnly = document.createElement('div');
         micOnly.style.cssText = `
@@ -703,7 +711,7 @@ async function updateCameraDisplay() {
         micOnly.textContent = '🎤';
         videoItem.appendChild(micOnly);
         
-        // Still add the hidden video element for audio
+        // Add hidden video for audio
         video.style.position = 'absolute';
         video.style.opacity = '0';
         video.style.pointerEvents = 'none';
@@ -747,9 +755,6 @@ function toggleCameraPanel() {
   if (!isVisible) {
     updateCameraDisplay();
   }
-  
-  // DON'T destroy connections when closing panel!
-  // Video elements remain in DOM even when panel is hidden
 }
 
 function setupChatForRoom(roomId) {
