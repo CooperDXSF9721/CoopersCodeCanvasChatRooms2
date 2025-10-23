@@ -499,32 +499,6 @@
       background: hsl(0, 84%, 40%);
     }
 
-    .microphone-toggle-btn {
-      flex: 1;
-      padding: 10px;
-      background: hsl(217, 20%, 24%);
-      color: hsl(217, 10%, 88%);
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-      transition: all 150ms;
-    }
-
-    .microphone-toggle-btn:hover {
-      background: hsl(217, 20%, 28%);
-    }
-
-    .microphone-toggle-btn.enabled {
-      background: hsl(142, 76%, 55%);
-      color: white;
-    }
-
-    .microphone-toggle-btn.enabled:hover {
-      background: hsl(142, 76%, 48%);
-    }
-
     .chat-menu-btn {
       background: hsl(217, 25%, 16%);
       border: 1px solid hsl(217, 22%, 18%);
@@ -712,11 +686,6 @@
       }
 
       .camera-container {
-        top: 144px;
-        right: 16px;
-      }
-
-      .camera-container {
         bottom: 120px;
         left: 16px;
       }
@@ -817,10 +786,10 @@
     </div>
   </div>
 
-  <!-- Camera Container (only visible in private rooms) -->
+  <!-- Camera & Mic Container (only visible in private rooms) -->
   <div id="cameraContainer" class="camera-container" style="display: none;">
     <div id="cameraMenuBtn" class="camera-menu-btn">
-      <span>📹</span>
+      <span>🎥</span>
       <span>Video/Audio</span>
     </div>
     <div id="cameraPanel" class="camera-panel">
