@@ -1,3 +1,15 @@
+// ==================== Firebase Config ====================
+const firebaseConfig = {
+  apiKey: "AIzaSyBUfT7u7tthl3Nm-ePsY7XWrdLK7YNoLVQ",
+  authDomain: "cooperscodeart.firebaseapp.com",
+  projectId: "cooperscodeart",
+  storageBucket: "cooperscodeart.firebasestorage.app",
+  messagingSenderId: "632469567217",
+  appId: "1:632469567217:web:14278c59ad762e67eedb50",
+  measurementId: "G-NXS0EPJR61"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
 
 // ==================== Storage Helper ====================
 function setStorage(key, value) {
