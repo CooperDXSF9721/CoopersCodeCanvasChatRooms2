@@ -38,11 +38,13 @@ let localStream = null;
 let mediaEnabled = false;
 let peerConnections = new Map();
 let remoteStreams = new Map();
+let lastDrawPoint = { x: null, y: null };
 
 const rtcConfiguration = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' }
   ]
 };
 
@@ -94,6 +96,9 @@ function changeUserName() {
     if (currentRoomId !== 'public') {
       const userStatusRef = database.ref(`rooms/${currentRoomId}/users/${sessionId}`);
       userStatusRef.update({ name: userName });
+      
+      const cameraStatusRef = database.ref(`cameras/${currentRoomId}/${sessionId}`);
+      cameraStatusRef.update({ name: userName });
     }
     
     alert('Name updated!');
@@ -101,37 +106,60 @@ function changeUserName() {
 }
 
 // ==================== Drawing Functions ====================
+function getCanvasCoordinates(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  
+  const clientX = e.clientX || e.touches?.[0]?.clientX;
+  const clientY = e.clientY || e.touches?.[0]?.clientY;
+  
+  return {
+    x: (clientX - rect.left) * scaleX,
+    y: (clientY - rect.top) * scaleY
+  };
+}
+
 function startDrawing(e) {
   drawing = true;
-  draw(e);
+  const coords = getCanvasCoordinates(e);
+  lastDrawPoint = coords;
+  
+  ctx.beginPath();
+  ctx.moveTo(coords.x, coords.y);
 }
 
 function stopDrawing() {
   if (!drawing) return;
   drawing = false;
   ctx.beginPath();
+  lastDrawPoint = { x: null, y: null };
 }
 
 function draw(e) {
   if (!drawing) return;
 
-  const rect = canvas.getBoundingClientRect();
-  const x = (e.clientX || e.touches?.[0]?.clientX) - rect.left;
-  const y = (e.clientY || e.touches?.[0]?.clientY) - rect.top;
+  const coords = getCanvasCoordinates(e);
 
   ctx.lineWidth = sizePicker.value;
   ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
   ctx.strokeStyle = isEraser ? '#ffffff' : colorPicker.value;
 
-  ctx.lineTo(x, y);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(x, y);
+  if (lastDrawPoint.x !== null && lastDrawPoint.y !== null) {
+    ctx.beginPath();
+    ctx.moveTo(lastDrawPoint.x, lastDrawPoint.y);
+    ctx.lineTo(coords.x, coords.y);
+    ctx.stroke();
+  }
+
+  lastDrawPoint = coords;
 
   if (roomDataRef) {
     roomDataRef.push({
       type: 'draw',
-      x, y,
+      x: coords.x,
+      y: coords.y,
       color: isEraser ? '#ffffff' : colorPicker.value,
       size: sizePicker.value,
       user: userName,
@@ -143,11 +171,16 @@ function draw(e) {
 canvas.addEventListener('mousedown', startDrawing);
 canvas.addEventListener('mouseup', stopDrawing);
 canvas.addEventListener('mousemove', draw);
+canvas.addEventListener('mouseleave', stopDrawing);
+
 canvas.addEventListener('touchstart', (e) => {
   e.preventDefault();
   startDrawing(e);
 });
-canvas.addEventListener('touchend', stopDrawing);
+canvas.addEventListener('touchend', (e) => {
+  e.preventDefault();
+  stopDrawing();
+});
 canvas.addEventListener('touchmove', (e) => {
   e.preventDefault();
   draw(e);
@@ -166,11 +199,8 @@ eyedropperBtn.addEventListener('click', () => {
 canvas.addEventListener('click', (e) => {
   if (!eyedropperMode) return;
 
-  const rect = canvas.getBoundingClientRect();
-  const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
-  const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
-
-  const pixel = ctx.getImageData(x, y, 1, 1).data;
+  const coords = getCanvasCoordinates(e);
+  const pixel = ctx.getImageData(coords.x, coords.y, 1, 1).data;
   const hexColor = '#' + [pixel[0], pixel[1], pixel[2]].map(c => 
     c.toString(16).padStart(2, '0')).join('');
 
@@ -195,8 +225,8 @@ freeTextInput.addEventListener('keydown', (e) => {
     const size = parseInt(textSizePicker.value);
     
     const rect = canvas.getBoundingClientRect();
-    const x = rect.width / 2;
-    const y = rect.height / 2;
+    const x = canvas.width / 2;
+    const y = canvas.height / 2;
 
     ctx.font = `${size}px Arial`;
     const textWidth = ctx.measureText(text).width;
@@ -208,13 +238,14 @@ freeTextInput.addEventListener('keydown', (e) => {
     }
 
     ctx.fillStyle = colorPicker.value;
-    ctx.fillText(text, x, y);
+    ctx.fillText(text, x - textWidth / 2, y);
 
     if (roomDataRef) {
       roomDataRef.push({
         type: 'text',
         text,
-        x, y,
+        x: x - textWidth / 2,
+        y,
         color: colorPicker.value,
         size,
         user: userName,
@@ -262,6 +293,7 @@ function joinRoom(roomId) {
     document.getElementById('cameraContainer').style.display = 'none';
     
     cleanupCamera();
+    cleanupChat();
   } else {
     roomDataRef = database.ref(`rooms/${roomId}/pages/page${currentPage}`);
     
@@ -281,26 +313,10 @@ function joinRoom(roomId) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   loadCanvas();
   
-  roomDataRef.on('child_added', (snapshot) => {
-    const data = snapshot.val();
-    if (!data) return;
-
-    if (data.type === 'draw') {
-      ctx.lineWidth = data.size;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = data.color;
-      ctx.lineTo(data.x, data.y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(data.x, data.y);
-    } else if (data.type === 'text') {
-      ctx.font = `${data.size}px Arial`;
-      ctx.fillStyle = data.color;
-      ctx.fillText(data.text, data.x, data.y);
-    } else if (data.type === 'clear') {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  });
+  if (roomDataRef) {
+    roomDataRef.off();
+    roomDataRef.on('child_added', handleCanvasUpdate);
+  }
 }
 
 function leaveCurrentRoom() {
@@ -311,6 +327,32 @@ function leaveCurrentRoom() {
   
   cleanupCamera();
   cleanupChat();
+  
+  if (roomDataRef) {
+    roomDataRef.off();
+  }
+}
+
+function handleCanvasUpdate(snapshot) {
+  const data = snapshot.val();
+  if (!data) return;
+
+  if (data.type === 'draw') {
+    ctx.lineWidth = data.size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = data.color;
+    
+    ctx.beginPath();
+    ctx.arc(data.x, data.y, data.size / 2, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (data.type === 'text') {
+    ctx.font = `${data.size}px Arial`;
+    ctx.fillStyle = data.color;
+    ctx.fillText(data.text, data.x, data.y);
+  } else if (data.type === 'clear') {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
 }
 
 function updateRoomUI() {
@@ -347,19 +389,25 @@ function loadCanvas() {
     const data = snapshot.val();
     if (!data) return;
 
-    Object.values(data).forEach(item => {
+    const items = Object.entries(data)
+      .sort((a, b) => (a[1].timestamp || 0) - (b[1].timestamp || 0));
+
+    items.forEach(([key, item]) => {
       if (item.type === 'draw') {
         ctx.lineWidth = item.size;
         ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
         ctx.strokeStyle = item.color;
-        ctx.lineTo(item.x, item.y);
-        ctx.stroke();
+        
         ctx.beginPath();
-        ctx.moveTo(item.x, item.y);
+        ctx.arc(item.x, item.y, item.size / 2, 0, Math.PI * 2);
+        ctx.fill();
       } else if (item.type === 'text') {
         ctx.font = `${item.size}px Arial`;
         ctx.fillStyle = item.color;
         ctx.fillText(item.text, item.x, item.y);
+      } else if (item.type === 'clear') {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
     });
   });
@@ -516,7 +564,9 @@ function loadPages() {
 function switchPage(pageNum) {
   currentPage = pageNum;
   
-  roomDataRef.off();
+  if (roomDataRef) {
+    roomDataRef.off();
+  }
   
   if (currentRoomId === 'public') {
     roomDataRef = database.ref(`public/page${pageNum}`);
@@ -530,26 +580,7 @@ function switchPage(pageNum) {
   loadCanvas();
   loadPages();
   
-  roomDataRef.on('child_added', (snapshot) => {
-    const data = snapshot.val();
-    if (!data) return;
-
-    if (data.type === 'draw') {
-      ctx.lineWidth = data.size;
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = data.color;
-      ctx.lineTo(data.x, data.y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(data.x, data.y);
-    } else if (data.type === 'text') {
-      ctx.font = `${data.size}px Arial`;
-      ctx.fillStyle = data.color;
-      ctx.fillText(data.text, data.x, data.y);
-    } else if (data.type === 'clear') {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-  });
+  roomDataRef.on('child_added', handleCanvasUpdate);
 }
 
 document.getElementById('createPageBtn')?.addEventListener('click', () => {
@@ -727,48 +758,41 @@ async function setupCameraForRoom(roomId) {
   const roomCamerasRef = database.ref(`cameras/${roomId}`);
   
   roomCamerasRef.on('child_added', async (snapshot) => {
-    const sessionId = snapshot.key;
+    const sid = snapshot.key;
     const data = snapshot.val();
     
-    console.log('Camera child_added:', sessionId, data);
+    console.log('Camera child_added:', sid, data);
     
-    if (sessionId === window.sessionId || !data.online) return;
+    if (sid === sessionId || !data.online) return;
     
-    if (data.enabled) {
-      if (!peerConnections.has(sessionId)) {
-        await createPeerConnection(sessionId, true);
-      }
+    if (data.enabled && !peerConnections.has(sid)) {
+      await createPeerConnection(sid, true);
     }
     
     updateCameraDisplay();
   });
 
   roomCamerasRef.on('child_changed', async (snapshot) => {
-    const sessionId = snapshot.key;
+    const sid = snapshot.key;
     const data = snapshot.val();
     
-    console.log('Camera child_changed:', sessionId, data);
+    console.log('Camera child_changed:', sid, data);
     
-    if (sessionId === window.sessionId) return;
+    if (sid === sessionId) return;
     
     if (!data.online) {
-      closePeerConnection(sessionId);
-    } else if (data.enabled) {
-      if (!peerConnections.has(sessionId)) {
-        await createPeerConnection(sessionId, true);
-      }
-    } else {
-      // Keep connection open even if they disable camera
-      // They might still be receiving
+      closePeerConnection(sid);
+    } else if (data.enabled && !peerConnections.has(sid)) {
+      await createPeerConnection(sid, true);
     }
     
     updateCameraDisplay();
   });
 
   roomCamerasRef.on('child_removed', (snapshot) => {
-    const sessionId = snapshot.key;
-    console.log('Camera child_removed:', sessionId);
-    closePeerConnection(sessionId);
+    const sid = snapshot.key;
+    console.log('Camera child_removed:', sid);
+    closePeerConnection(sid);
     updateCameraDisplay();
   });
 
@@ -1125,7 +1149,7 @@ function cleanupCamera() {
     localStream = null;
   }
   
-  for (const [sessionId, pc] of peerConnections.entries()) {
+  for (const [sid, pc] of peerConnections.entries()) {
     pc.close();
   }
   
@@ -1139,6 +1163,11 @@ function cleanupCamera() {
   }
   
   allCamerasRef.off();
+  
+  // Clean up signaling listeners
+  if (currentRoomId !== 'public') {
+    database.ref(`signaling/${currentRoomId}/${sessionId}`).off();
+  }
   
   mediaEnabled = false;
   updateCameraButton();
@@ -1168,6 +1197,7 @@ document.getElementById('deleteRoomBtn')?.addEventListener('click', () => {
   
   if (confirm(`Delete room ${currentRoomId}? This cannot be undone.`)) {
     database.ref(`rooms/${currentRoomId}`).remove().then(() => {
+      database.ref(`cameras/${currentRoomId}`).remove();
       joinRoom('public');
       roomDropdown.classList.remove('show');
     });
@@ -1262,6 +1292,108 @@ closeCameraBtn?.addEventListener('click', () => {
 });
 
 toggleCameraBtn?.addEventListener('click', toggleMedia);
+
+// ==================== Keyboard Shortcuts ====================
+document.addEventListener('keydown', (e) => {
+  // Ctrl/Cmd + Z for undo (not implemented yet)
+  if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+    e.preventDefault();
+    // TODO: Implement undo functionality
+  }
+  
+  // E for eraser
+  if (e.key === 'e' && !e.ctrlKey && !e.metaKey && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    eraserBtn.click();
+  }
+  
+  // C for color picker focus
+  if (e.key === 'c' && !e.ctrlKey && !e.metaKey && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    colorPicker.focus();
+    colorPicker.click();
+  }
+  
+  // T for text input focus
+  if (e.key === 't' && !e.ctrlKey && !e.metaKey && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    freeTextInput.focus();
+  }
+});
+
+// ==================== Window Unload ====================
+window.addEventListener('beforeunload', () => {
+  if (currentRoomId !== 'public') {
+    const userStatusRef = database.ref(`rooms/${currentRoomId}/users/${sessionId}`);
+    userStatusRef.remove();
+    
+    if (cameraStatusRef) {
+      cameraStatusRef.remove();
+    }
+  }
+  
+  cleanupCamera();
+});
+
+// ==================== Touch Event Improvements ====================
+let lastTouchEnd = 0;
+document.addEventListener('touchend', (e) => {
+  const now = Date.now();
+  if (now - lastTouchEnd <= 300) {
+    e.preventDefault();
+  }
+  lastTouchEnd = now;
+}, false);
+
+// Prevent pull-to-refresh
+document.body.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1) {
+    e.preventDefault();
+  }
+}, { passive: false });
+
+// ==================== Performance Optimization ====================
+let drawQueue = [];
+let drawTimeout = null;
+
+function queueDraw(drawData) {
+  drawQueue.push(drawData);
+  
+  if (!drawTimeout) {
+    drawTimeout = setTimeout(() => {
+      procesDrawQueue();
+      drawTimeout = null;
+    }, 16); // ~60fps
+  }
+}
+
+function procesDrawQueue() {
+  if (drawQueue.length === 0) return;
+  
+  drawQueue.forEach(data => {
+    if (data.type === 'draw') {
+      ctx.lineWidth = data.size;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = data.color;
+      
+      ctx.beginPath();
+      ctx.arc(data.x, data.y, data.size / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+  
+  drawQueue = [];
+}
+
+// ==================== Error Handling ====================
+window.addEventListener('error', (e) => {
+  console.error('Global error:', e.error);
+});
+
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('Unhandled promise rejection:', e.reason);
+});
 
 // ==================== Initialize ====================
 window.sessionId = sessionId;
