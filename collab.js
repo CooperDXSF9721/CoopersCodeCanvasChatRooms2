@@ -172,7 +172,7 @@ function updateActiveUsers(snapshot) {
 let chatMessagesRef = null;
 let chatCache = [];
 
-// ==================== Camera & Microphone System ====================
+// ==================== Camera System ====================
 let localStream = null;
 let cameraEnabled = false;
 let cameraStatusRef = null;
@@ -214,13 +214,11 @@ async function setupCameraForRoom(roomId) {
   
   cameraStatusRef.onDisconnect().remove();
   
-  // Listen for other users' camera status
   allCamerasRef.on('child_added', async snapshot => {
     const sessionId = snapshot.key;
     const data = snapshot.val();
     
     if (sessionId !== userSessionId && data.enabled && cameraEnabled) {
-      // Create peer connection for this user
       await createPeerConnection(sessionId, true);
     }
     
@@ -233,12 +231,10 @@ async function setupCameraForRoom(roomId) {
     
     if (sessionId !== userSessionId) {
       if (data.enabled && cameraEnabled) {
-        // Other user enabled camera
         if (!peerConnections.has(sessionId)) {
           await createPeerConnection(sessionId, true);
         }
       } else {
-        // Other user disabled camera
         closePeerConnection(sessionId);
       }
     }
@@ -269,13 +265,11 @@ function cleanupCamera() {
     allCamerasRef = null;
   }
   
-  // Close all peer connections
   peerConnections.forEach((pc, sessionId) => {
     closePeerConnection(sessionId);
   });
   peerConnections.clear();
   
-  // Clean up signaling listeners
   signalingRefs.forEach((ref, sessionId) => {
     ref.off();
     db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${sessionId}`).remove();
@@ -295,20 +289,17 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
   const peerConnection = new RTCPeerConnection(rtcConfiguration);
   peerConnections.set(remoteSessionId, peerConnection);
   
-  // Add local stream tracks to peer connection
   if (localStream) {
     localStream.getTracks().forEach(track => {
       peerConnection.addTrack(track, localStream);
     });
   }
   
-  // Handle incoming remote stream
   peerConnection.ontrack = (event) => {
     const remoteStream = event.streams[0];
     displayRemoteVideo(remoteSessionId, remoteStream);
   };
   
-  // Handle ICE candidates
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
       const signalingPath = `rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`;
@@ -320,7 +311,6 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
     }
   };
   
-  // Set up signaling listener
   const incomingSignalingPath = `rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`;
   const signalingRef = db.ref(incomingSignalingPath);
   signalingRefs.set(remoteSessionId, signalingRef);
@@ -344,11 +334,9 @@ async function createPeerConnection(remoteSessionId, isInitiator) {
       await peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate));
     }
     
-    // Clean up old signaling messages
     snapshot.ref.remove();
   });
   
-  // If initiator, create and send offer
   if (isInitiator) {
     const offer = await peerConnection.createOffer();
     await peerConnection.setLocalDescription(offer);
@@ -376,7 +364,6 @@ function closePeerConnection(remoteSessionId) {
     signalingRefs.delete(remoteSessionId);
   }
   
-  // Clean up signaling paths
   if (currentRoomId) {
     db.ref(`rooms/${currentRoomId}/signaling/${userSessionId}_${remoteSessionId}`).remove();
     db.ref(`rooms/${currentRoomId}/signaling/${remoteSessionId}_${userSessionId}`).remove();
@@ -397,10 +384,9 @@ async function toggleCamera() {
   
   if (cameraEnabled) {
     try {
-      // Request both video and audio
       localStream = await navigator.mediaDevices.getUserMedia({ 
         video: { width: 640, height: 480 }, 
-        audio: true  // Enable microphone
+        audio: false 
       });
       
       await cameraStatusRef.update({ 
@@ -408,7 +394,6 @@ async function toggleCamera() {
         name: userName
       });
       
-      // Create peer connections with all other users who have cameras enabled
       const snapshot = await allCamerasRef.once('value');
       if (snapshot.exists()) {
         const cameras = snapshot.val();
@@ -420,8 +405,8 @@ async function toggleCamera() {
       }
       
     } catch (err) {
-      console.error('Error accessing camera/microphone:', err);
-      alert('Could not access camera or microphone. Please check permissions.');
+      console.error('Error accessing camera:', err);
+      alert('Could not access camera. Please check permissions.');
       cameraEnabled = false;
     }
   } else {
@@ -430,7 +415,6 @@ async function toggleCamera() {
       localStream = null;
     }
     
-    // Close all peer connections
     peerConnections.forEach((pc, sessionId) => {
       closePeerConnection(sessionId);
     });
@@ -450,10 +434,10 @@ function updateCameraButton() {
   if (!btn) return;
   
   if (cameraEnabled) {
-    btn.textContent = 'Disable Camera & Mic';
+    btn.textContent = 'Disable Camera';
     btn.classList.add('disabled');
   } else {
-    btn.textContent = 'Enable Camera & Mic';
+    btn.textContent = 'Enable Camera';
     btn.classList.remove('disabled');
   }
 }
@@ -484,7 +468,7 @@ async function updateCameraDisplay() {
       const video = document.createElement('video');
       video.autoplay = true;
       video.playsInline = true;
-      video.muted = isCurrentUser;  // Mute own video to prevent feedback
+      video.muted = isCurrentUser;
       video.id = `video-${sessionId}`;
       
       if (isCurrentUser && localStream) {
@@ -798,6 +782,7 @@ let currentRoomId = null;
 let currentPageId = 'page1';
 let linesRef = null;
 let textsRef = null;
+let mediaRef = null;
 let roomDeletedRef = null;
 let roomClearedRef = null;
 let isJoiningRoom = false;
@@ -860,6 +845,7 @@ async function joinRoom(roomId, password = null) {
 
   if (linesRef) linesRef.off();
   if (textsRef) textsRef.off();
+  if (mediaRef) mediaRef.off();
   if (roomDeletedRef) roomDeletedRef.off();
   if (roomClearedRef) roomClearedRef.off();
 
@@ -867,10 +853,12 @@ async function joinRoom(roomId, password = null) {
   currentPageId = 'page1';
   linesRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/lines`);
   textsRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/texts`);
+  mediaRef = db.ref(`rooms/${roomId}/pages/${currentPageId}/media`);
 
   isJoiningRoom = true;
   linesCache.length = 0;
   textsCache.clear();
+  mediaCache.clear();
   drawAll();
 
   setupFirebaseListeners();
@@ -908,6 +896,7 @@ function setupRoomClearedListener() {
     if (!isJoiningRoom && snapshot.exists()) {
       linesCache.length = 0;
       textsCache.clear();
+      mediaCache.clear();
       drawAll();
     }
   });
@@ -938,15 +927,18 @@ async function switchPage(pageId) {
   
   if (linesRef) linesRef.off();
   if (textsRef) textsRef.off();
+  if (mediaRef) mediaRef.off();
   if (roomClearedRef) roomClearedRef.off();
   
   currentPageId = pageId;
   linesRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`);
   textsRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`);
+  mediaRef = db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/media`);
   
   isJoiningRoom = true;
   linesCache.length = 0;
   textsCache.clear();
+  mediaCache.clear();
   drawAll();
   
   setupFirebaseListeners();
@@ -1054,6 +1046,39 @@ function setupFirebaseListeners() {
       drawAll();
     }
   });
+
+  // Media listeners
+  mediaRef.on('child_added', snapshot => {
+    const key = snapshot.key;
+    const val = snapshot.val();
+    loadMediaElement(key, val);
+  });
+
+  mediaRef.on('child_changed', snapshot => {
+    const key = snapshot.key;
+    const val = snapshot.val();
+    const existing = mediaCache.get(key);
+    if (existing) {
+      existing.x = val.x;
+      existing.y = val.y;
+      existing.width = val.width;
+      existing.height = val.height;
+      drawAll();
+    }
+  });
+
+  mediaRef.on('child_removed', snapshot => {
+    const key = snapshot.key;
+    mediaCache.delete(key);
+    drawAll();
+  });
+
+  mediaRef.on('value', snapshot => {
+    if (!isJoiningRoom && !snapshot.exists() && mediaCache.size > 0) {
+      mediaCache.clear();
+      drawAll();
+    }
+  });
 }
 
 // ==================== Canvas Setup ====================
@@ -1064,9 +1089,12 @@ canvas.height = window.innerHeight;
 
 const linesCache = [];
 const textsCache = new Map();
+const mediaCache = new Map();
 
 function drawAll() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
+  // Draw lines
   linesCache.forEach(line => {
     const { points, color, width, erase } = line;
     points.forEach(p => {
@@ -1083,6 +1111,69 @@ function drawAll() {
     });
   });
   ctx.globalCompositeOperation = 'source-over';
+  
+  // Draw media (images and videos)
+  mediaCache.forEach(obj => {
+    if (obj.type === 'image' && obj.element && obj.element.complete) {
+      const width = obj.width || 200;
+      const height = obj.height || 200;
+      ctx.drawImage(obj.element, obj.x, obj.y, width, height);
+      
+      // Draw border
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(obj.x, obj.y, width, height);
+      
+      // Draw resize handle
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(obj.x + width - 10, obj.y + height - 10, 10, 10);
+      
+    } else if (obj.type === 'video' && obj.element) {
+      const width = obj.width || 320;
+      const height = obj.height || 240;
+      
+      // Draw video frame
+      if (obj.element.readyState >= 2) {
+        ctx.drawImage(obj.element, obj.x, obj.y, width, height);
+      } else {
+        // Placeholder while loading
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+        ctx.fillRect(obj.x, obj.y, width, height);
+        ctx.fillStyle = '#666';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('Loading video...', obj.x + width/2, obj.y + height/2);
+        ctx.textAlign = 'left';
+      }
+      
+      // Draw border
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(obj.x, obj.y, width, height);
+      
+      // Draw resize handle
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(obj.x + width - 10, obj.y + height - 10, 10, 10);
+      
+      // Play/pause indicator
+      if (obj.element.paused) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.beginPath();
+        ctx.arc(obj.x + width/2, obj.y + height/2, 30, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = 'white';
+        ctx.beginPath();
+        ctx.moveTo(obj.x + width/2 - 10, obj.y + height/2 - 15);
+        ctx.lineTo(obj.x + width/2 - 10, obj.y + height/2 + 15);
+        ctx.lineTo(obj.x + width/2 + 15, obj.y + height/2);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+  });
+  
+  // Draw text
   ctx.textBaseline = 'top';
   textsCache.forEach(obj => {
     const size = obj.size || 40;
@@ -1108,6 +1199,7 @@ let brushSize = 4;
 let drawing = false;
 let current = { x: 0, y: 0 };
 let eraserActive = false;
+let eyedropperActive = false;
 
 function drawLineSmooth(x0, y0, x1, y1, color = brushColor, width = brushSize, erase = false) {
   const points = [];
@@ -1135,9 +1227,183 @@ function drawLineSmooth(x0, y0, x1, y1, color = brushColor, width = brushSize, e
   return points;
 }
 
-// ==================== Pointer Handling & Text Dragging ====================
+// ==================== Media Management ====================
+function loadMediaElement(key, data) {
+  if (data.type === 'image') {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      mediaCache.set(key, {
+        ...data,
+        element: img
+      });
+      drawAll();
+    };
+    img.onerror = () => {
+      console.error('Failed to load image:', data.dataUrl?.substring(0, 50));
+    };
+    img.src = data.dataUrl;
+    
+  } else if (data.type === 'video') {
+    const video = document.createElement('video');
+    video.muted = true;
+    video.loop = true;
+    video.playsInline = true;
+    
+    video.addEventListener('loadeddata', () => {
+      mediaCache.set(key, {
+        ...data,
+        element: video
+      });
+      drawAll();
+      
+      // Start animation loop for video
+      const animate = () => {
+        if (mediaCache.has(key)) {
+          drawAll();
+          requestAnimationFrame(animate);
+        }
+      };
+      animate();
+    });
+    
+    video.addEventListener('error', (e) => {
+      console.error('Failed to load video:', e);
+    });
+    
+    video.src = data.dataUrl;
+    video.load();
+  }
+}
+
+function mediaAtPoint(x, y) {
+  let found = null;
+  mediaCache.forEach((m, key) => {
+    const width = m.width || (m.type === 'image' ? 200 : 320);
+    const height = m.height || (m.type === 'image' ? 200 : 240);
+    
+    if (x >= m.x && x <= m.x + width && y >= m.y && y <= m.y + height) {
+      // Check if clicking resize handle
+      const resizeHandle = {
+        x: m.x + width - 10,
+        y: m.y + height - 10,
+        width: 10,
+        height: 10
+      };
+      
+      const isResizeHandle = x >= resizeHandle.x && x <= resizeHandle.x + resizeHandle.width &&
+                            y >= resizeHandle.y && y <= resizeHandle.y + resizeHandle.height;
+      
+      found = { key, m, isResizeHandle };
+    }
+  });
+  return found;
+}
+
+async function uploadMedia() {
+  const input = document.getElementById('mediaUpload');
+  const files = input.files;
+  
+  if (!files || files.length === 0 || !currentRoomId) return;
+  
+  for (const file of files) {
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    
+    if (!isImage && !isVideo) {
+      alert(`File ${file.name} is not a supported image or video format.`);
+      continue;
+    }
+    
+    // Check file size (limit to 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      alert(`File ${file.name} is too large. Maximum size is 10MB.`);
+      continue;
+    }
+    
+    const reader = new FileReader();
+    
+    reader.onload = async (e) => {
+      const dataUrl = e.target.result;
+      
+      if (isImage) {
+        // Get image dimensions
+        const img = new Image();
+        img.onload = () => {
+          const maxWidth = 400;
+          const maxHeight = 400;
+          let width = img.width;
+          let height = img.height;
+          
+          // Scale down if too large
+          if (width > maxWidth || height > maxHeight) {
+            const ratio = Math.min(maxWidth / width, maxHeight / height);
+            width = width * ratio;
+            height = height * ratio;
+          }
+          
+          const { x, y } = findEmptySpace(width, height);
+          
+          mediaRef.push({
+            type: 'image',
+            dataUrl: dataUrl,
+            x: x,
+            y: y,
+            width: width,
+            height: height,
+            timestamp: Date.now()
+          });
+        };
+        img.src = dataUrl;
+        
+      } else if (isVideo) {
+        const width = 320;
+        const height = 240;
+        const { x, y } = findEmptySpace(width, height);
+        
+        mediaRef.push({
+          type: 'video',
+          dataUrl: dataUrl,
+          x: x,
+          y: y,
+          width: width,
+          height: height,
+          timestamp: Date.now()
+        });
+      }
+    };
+    
+    reader.onerror = () => {
+      alert(`Failed to read file ${file.name}`);
+    };
+    
+    reader.readAsDataURL(file);
+  }
+  
+  // Reset input
+  input.value = '';
+}
+
+// ==================== Pointer Handling & Dragging ====================
 function startDrawing(x, y) { drawing = true; current.x = x; current.y = y; }
 function stopDrawing() { drawing = false; }
+
+function getColorAtPoint(x, y) {
+  const pixelData = ctx.getImageData(x, y, 1, 1).data;
+  const r = pixelData[0];
+  const g = pixelData[1];
+  const b = pixelData[2];
+  const a = pixelData[3];
+  
+  if (a === 0) {
+    return '#ffffff';
+  }
+  
+  return '#' + [r, g, b].map(x => {
+    const hex = x.toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  }).join('');
+}
 
 function textAtPoint(x, y) {
   let found = null;
@@ -1158,45 +1424,134 @@ function textAtPoint(x, y) {
 }
 
 let draggingTextKey = null;
+let draggingMediaKey = null;
+let resizingMediaKey = null;
 let dragOffset = { x: 0, y: 0 };
 let dragRAFQueued = false;
 let latestDragPos = null;
+let resizeStartSize = { width: 0, height: 0 };
+let resizeStartPos = { x: 0, y: 0 };
 
 function scheduleDragUpdate() {
   if (dragRAFQueued) return;
   dragRAFQueued = true;
   requestAnimationFrame(() => {
     dragRAFQueued = false;
-    if (!draggingTextKey || !latestDragPos) return;
-    const { x, y } = latestDragPos;
-    const local = textsCache.get(draggingTextKey);
-    if (local) { local.x = x; local.y = y; }
-    drawAll();
-    textsRef.child(draggingTextKey).update({ x, y });
+    
+    if (draggingTextKey && latestDragPos) {
+      const { x, y } = latestDragPos;
+      const local = textsCache.get(draggingTextKey);
+      if (local) { local.x = x; local.y = y; }
+      drawAll();
+      textsRef.child(draggingTextKey).update({ x, y });
+    }
+    
+    if (draggingMediaKey && latestDragPos) {
+      const { x, y } = latestDragPos;
+      const local = mediaCache.get(draggingMediaKey);
+      if (local) { local.x = x; local.y = y; }
+      drawAll();
+      mediaRef.child(draggingMediaKey).update({ x, y });
+    }
+    
+    if (resizingMediaKey && latestDragPos) {
+      const { x, y } = latestDragPos;
+      const local = mediaCache.get(resizingMediaKey);
+      if (local) {
+        const deltaX = x - resizeStartPos.x;
+        const deltaY = y - resizeStartPos.y;
+        const delta = Math.max(deltaX, deltaY);
+        
+        const newWidth = Math.max(50, resizeStartSize.width + delta);
+        const newHeight = Math.max(50, resizeStartSize.height + delta);
+        
+        local.width = newWidth;
+        local.height = newHeight;
+        drawAll();
+        mediaRef.child(resizingMediaKey).update({ width: newWidth, height: newHeight });
+      }
+    }
   });
 }
 
 function handlePointerDown(x, y) {
-  const hit = textAtPoint(x, y);
-  if (hit) {
-    draggingTextKey = hit.key;
-    dragOffset.x = x - hit.t.x;
-    dragOffset.y = y - hit.t.y;
+  // Handle eyedropper mode
+  if (eyedropperActive) {
+    const pickedColor = getColorAtPoint(x, y);
+    brushColor = pickedColor;
+    colorPicker.value = pickedColor;
+    eyedropperActive = false;
+    canvas.classList.remove('eyedropper-mode');
+    
+    const eyedropperBtn = document.getElementById('eyedropperBtn');
+    if (eyedropperBtn) {
+      eyedropperBtn.style.backgroundColor = '';
+    }
     return;
   }
+  
+  // Check for media interaction
+  const mediaHit = mediaAtPoint(x, y);
+  if (mediaHit) {
+    if (mediaHit.isResizeHandle) {
+      resizingMediaKey = mediaHit.key;
+      resizeStartSize = { 
+        width: mediaHit.m.width || (mediaHit.m.type === 'image' ? 200 : 320), 
+        height: mediaHit.m.height || (mediaHit.m.type === 'image' ? 200 : 240) 
+      };
+      resizeStartPos = { x, y };
+      canvas.classList.add('resize-mode');
+    } else {
+      // Check if clicking on video to play/pause
+      if (mediaHit.m.type === 'video' && mediaHit.m.element) {
+        const video = mediaHit.m.element;
+        if (video.paused) {
+          video.play();
+        } else {
+          video.pause();
+        }
+        drawAll();
+      } else {
+        // Drag media
+        draggingMediaKey = mediaHit.key;
+        dragOffset.x = x - mediaHit.m.x;
+        dragOffset.y = y - mediaHit.m.y;
+      }
+    }
+    return;
+  }
+  
+  // Check for text interaction
+  const textHit = textAtPoint(x, y);
+  if (textHit) {
+    draggingTextKey = textHit.key;
+    dragOffset.x = x - textHit.t.x;
+    dragOffset.y = y - textHit.t.y;
+    return;
+  }
+  
   startDrawing(x, y);
 }
 
 function drawMove(x, y) {
-  if (draggingTextKey) {
-    latestDragPos = { x: x - dragOffset.x, y: y - dragOffset.y };
+  if (eyedropperActive) {
+    return;
+  }
+  
+  if (draggingTextKey || draggingMediaKey || resizingMediaKey) {
+    latestDragPos = resizingMediaKey ? { x, y } : { x: x - dragOffset.x, y: y - dragOffset.y };
     scheduleDragUpdate();
     return;
   }
+  
   if (!drawing) return;
+  
   const points = drawLineSmooth(current.x, current.y, x, y, brushColor, brushSize, eraserActive);
+  
   if (eraserActive && points && points.length) {
     const removed = new Set();
+    
+    // Check for text deletion
     points.forEach(p => {
       const hit = textAtPoint(p.x, p.y);
       if (hit && !removed.has(hit.key)) {
@@ -1204,7 +1559,17 @@ function drawMove(x, y) {
         textsRef.child(hit.key).remove();
       }
     });
+    
+    // Check for media deletion
+    points.forEach(p => {
+      const hit = mediaAtPoint(p.x, p.y);
+      if (hit && !removed.has(hit.key)) {
+        removed.add(hit.key);
+        mediaRef.child(hit.key).remove();
+      }
+    });
   }
+  
   linesRef.push({ points, color: brushColor, width: brushSize, erase: eraserActive, timestamp: Date.now() });
   current.x = x;
   current.y = y;
@@ -1213,8 +1578,11 @@ function drawMove(x, y) {
 function handlePointerUp() {
   drawing = false;
   draggingTextKey = null;
+  draggingMediaKey = null;
+  resizingMediaKey = null;
   latestDragPos = null;
   dragRAFQueued = false;
+  canvas.classList.remove('resize-mode');
 }
 
 canvas.addEventListener('mousedown', e => handlePointerDown(e.clientX, e.clientY));
@@ -1239,6 +1607,7 @@ canvas.addEventListener('touchmove', e => {
 
 // ==================== UI Controls ====================
 const colorPicker = document.getElementById('colorPicker');
+const eyedropperBtn = document.getElementById('eyedropperBtn');
 const sizePicker = document.getElementById('sizePicker');
 if (sizePicker) {
   sizePicker.max = '200';
@@ -1247,6 +1616,8 @@ if (sizePicker) {
 const eraserBtn = document.getElementById('eraserBtn');
 const clearBtn = document.getElementById('clearBtn');
 const freeTextInput = document.getElementById('freeTextInput');
+const mediaUploadBtn = document.getElementById('mediaUploadBtn');
+const mediaUploadInput = document.getElementById('mediaUpload');
 
 let textSizePicker = document.getElementById('textSizePicker');
 let textFontPicker = document.getElementById('textFontPicker');
@@ -1306,6 +1677,26 @@ colorPicker.addEventListener('change', e => {
   brushColor = e.target.value;
   eraserActive = false;
   eraserBtn.style.backgroundColor = '';
+  eyedropperActive = false;
+  canvas.classList.remove('eyedropper-mode');
+  if (eyedropperBtn) {
+    eyedropperBtn.style.backgroundColor = '';
+  }
+});
+
+eyedropperBtn?.addEventListener('click', () => {
+  eyedropperActive = !eyedropperActive;
+  
+  if (eyedropperActive) {
+    eraserActive = false;
+    eraserBtn.style.backgroundColor = '';
+    
+    eyedropperBtn.style.backgroundColor = 'hsl(220, 90%, 56%)';
+    canvas.classList.add('eyedropper-mode');
+  } else {
+    eyedropperBtn.style.backgroundColor = '';
+    canvas.classList.remove('eyedropper-mode');
+  }
 });
 
 const updateBrushSize = (raw) => {
@@ -1320,9 +1711,25 @@ sizePicker.addEventListener('change', e => updateBrushSize(e.target.value));
 eraserBtn.addEventListener('click', () => {
   eraserActive = !eraserActive;
   eraserBtn.style.backgroundColor = eraserActive ? 'orange' : '';
+  
+  if (eraserActive && eyedropperActive) {
+    eyedropperActive = false;
+    canvas.classList.remove('eyedropper-mode');
+    if (eyedropperBtn) {
+      eyedropperBtn.style.backgroundColor = '';
+    }
+  }
 });
 
-function findEmptySpace(textWidth, textHeight) {
+mediaUploadBtn?.addEventListener('click', () => {
+  mediaUploadInput.click();
+});
+
+mediaUploadInput?.addEventListener('change', () => {
+  uploadMedia();
+});
+
+function findEmptySpace(itemWidth, itemHeight) {
   const padding = 20;
   const step = 50;
   const maxAttempts = 100;
@@ -1362,33 +1769,50 @@ function findEmptySpace(textWidth, textHeight) {
     return hasOverlap;
   }
   
+  function overlapsWithMedia(x, y, w, h) {
+    let hasOverlap = false;
+    mediaCache.forEach(m => {
+      const mWidth = m.width || (m.type === 'image' ? 200 : 320);
+      const mHeight = m.height || (m.type === 'image' ? 200 : 240);
+      
+      if (!(x + w + padding < m.x || 
+            x > m.x + mWidth + padding || 
+            y + h + padding < m.y || 
+            y > m.y + mHeight + padding)) {
+        hasOverlap = true;
+      }
+    });
+    return hasOverlap;
+  }
+  
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const gridX = (attempt % 10) * step + 50;
     const gridY = Math.floor(attempt / 10) * step + 50;
     
-    if (gridX + textWidth + padding > canvas.width || 
-        gridY + textHeight + padding > canvas.height) {
+    if (gridX + itemWidth + padding > canvas.width || 
+        gridY + itemHeight + padding > canvas.height) {
       continue;
     }
     
-    if (!overlapsWithToolbar(gridX, gridY, textWidth, textHeight) &&
-        !overlapsWithText(gridX, gridY, textWidth, textHeight)) {
+    if (!overlapsWithToolbar(gridX, gridY, itemWidth, itemHeight) &&
+        !overlapsWithText(gridX, gridY, itemWidth, itemHeight) &&
+        !overlapsWithMedia(gridX, gridY, itemWidth, itemHeight)) {
       return { x: gridX, y: gridY };
     }
   }
   
   let randomX, randomY;
   for (let i = 0; i < 20; i++) {
-    randomX = Math.random() * (canvas.width - textWidth - 100) + 50;
-    randomY = Math.random() * (canvas.height - textHeight - 100) + 50;
+    randomX = Math.random() * (canvas.width - itemWidth - 100) + 50;
+    randomY = Math.random() * (canvas.height - itemHeight - 100) + 50;
     
-    if (!overlapsWithToolbar(randomX, randomY, textWidth, textHeight)) {
+    if (!overlapsWithToolbar(randomX, randomY, itemWidth, itemHeight)) {
       return { x: randomX, y: randomY };
     }
   }
   
   return {
-    x: canvas.width - textWidth - 100,
+    x: canvas.width - itemWidth - 100,
     y: canvas.height / 2
   };
 }
@@ -1722,15 +2146,17 @@ pageMenuBtn?.addEventListener('click', () => {
     clearBtn.style.display = 'inline-block';
     clearBtn.addEventListener('click', async () => {
       if (!currentRoomId) return;
-      if (!confirm('Clear entire canvas? This will remove all drawings and text for everyone.')) return;
+      if (!confirm('Clear entire canvas? This will remove all drawings, text, and media for everyone.')) return;
       try {
         await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/cleared`).set(Date.now());
         
         await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/lines`).remove();
         await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/texts`).remove();
+        await db.ref(`rooms/${currentRoomId}/pages/${currentPageId}/media`).remove();
         
         linesCache.length = 0;
         textsCache.clear();
+        mediaCache.clear();
         drawAll();
       } catch (err) {
         console.error('Failed to clear canvas data:', err);
@@ -1827,6 +2253,13 @@ pageMenuBtn?.addEventListener('click', () => {
                 Object.values(page.texts).forEach(text => {
                   if (text.timestamp && text.timestamp > lastTimestamp) {
                     lastTimestamp = text.timestamp;
+                  }
+                });
+              }
+              if (page.media) {
+                Object.values(page.media).forEach(media => {
+                  if (media.timestamp && media.timestamp > lastTimestamp) {
+                    lastTimestamp = media.timestamp;
                   }
                 });
               }
